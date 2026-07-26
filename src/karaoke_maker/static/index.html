@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>karaoke-maker</title>
+<style>
+  body { font-family: sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  form { display: grid; gap: 0.5rem; margin-bottom: 2rem; }
+  label { display: flex; flex-direction: column; font-size: 0.9rem; }
+  textarea { min-height: 6rem; font-family: inherit; }
+  #jobs table { width: 100%; border-collapse: collapse; }
+  #jobs th, #jobs td { text-align: left; padding: 0.3rem; border-bottom: 1px solid #ccc; }
+  #jobs tr { cursor: pointer; }
+  #detail { background: #f4f4f4; padding: 1rem; white-space: pre-wrap; max-height: 20rem; overflow-y: auto; }
+</style>
+</head>
+<body>
+<h1>karaoke-maker</h1>
+
+<form id="song-form">
+  <label>Title <input name="title" required></label>
+  <label>Artist <input name="artist" required></label>
+  <label>Lyrics <textarea name="lyrics" required></textarea></label>
+  <label>YouTube URL <input name="youtube_url"></label>
+  <label>Video file <input type="file" name="video"></label>
+  <label>Genre <input name="genre"></label>
+  <label>Year <input name="year" type="number"></label>
+  <label>Language <input name="language"></label>
+  <label>BPM override <input name="bpm" type="number" step="any"></label>
+  <label>Cover image <input type="file" name="cover"></label>
+  <button type="submit">Submit</button>
+</form>
+<p id="form-error" style="color: red;"></p>
+
+<h2>Jobs</h2>
+<div id="jobs"></div>
+
+<h2>Detail</h2>
+<pre id="detail">select a job</pre>
+
+<script>
+const form = document.getElementById("song-form");
+const formError = document.getElementById("form-error");
+const jobsDiv = document.getElementById("jobs");
+const detail = document.getElementById("detail");
+let selectedId = null;
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  formError.textContent = "";
+  const data = new FormData(form);
+  for (const [name, value] of [...data.entries()]) {
+    const isFile = value instanceof File;
+    if (isFile && value.size === 0) data.delete(name);
+    else if (!isFile && value === "") data.delete(name);
+  }
+  const resp = await fetch("/api/jobs", { method: "POST", body: data });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    formError.textContent = body.detail || `error: ${resp.status}`;
+    return;
+  }
+  form.reset();
+  refreshJobs();
+});
+
+function renderJobs(jobs) {
+  const rows = jobs.map(j => `
+    <tr data-id="${j.id}">
+      <td>${j.title}</td><td>${j.artist}</td><td>${j.status}</td><td>${j.stage ?? ""}</td>
+    </tr>`).join("");
+  jobsDiv.innerHTML = `<table>
+    <thead><tr><th>Title</th><th>Artist</th><th>Status</th><th>Stage</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+  jobsDiv.querySelectorAll("tr[data-id]").forEach(row => {
+    row.addEventListener("click", () => selectJob(row.dataset.id));
+  });
+}
+
+async function refreshJobs() {
+  const resp = await fetch("/api/jobs");
+  renderJobs(await resp.json());
+  if (selectedId) refreshDetail();
+}
+
+async function selectJob(id) {
+  selectedId = id;
+  refreshDetail();
+}
+
+async function refreshDetail() {
+  const resp = await fetch(`/api/jobs/${selectedId}`);
+  if (!resp.ok) return;
+  const job = await resp.json();
+  const lines = [
+    `status: ${job.status}`,
+    `stage: ${job.stage ?? ""}`,
+    job.output_dir ? `output_dir: ${job.output_dir}` : null,
+    job.error ? `error: ${job.error}` : null,
+    job.warnings.length ? `warnings:\n  ${job.warnings.join("\n  ")}` : null,
+    "log:",
+    ...job.log,
+  ].filter(l => l !== null);
+  detail.textContent = lines.join("\n");
+}
+
+setInterval(refreshJobs, 3000);
+refreshJobs();
+</script>
+</body>
+</html>
