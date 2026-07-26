@@ -44,3 +44,36 @@ def test_requires_exactly_one_source(tmp_path):
     ctx = make_ctx(tmp_path)
     with pytest.raises(PipelineError):
         acquire.acquire_stage().run(ctx)
+
+def test_classify_ordinary_webm_and_jpg(tmp_path):
+    (tmp_path / "source_video.webm").write_bytes(b"v")
+    (tmp_path / "source_video.jpg").write_bytes(b"t")
+    video, thumb = acquire._classify_downloads(tmp_path)
+    assert video.name == "source_video.webm"
+    assert thumb.name == "source_video.jpg"
+
+def test_classify_unexpected_thumbnail_extension(tmp_path):
+    (tmp_path / "source_video.webm").write_bytes(b"v")
+    (tmp_path / "source_video.avif").write_bytes(b"t")
+    video, thumb = acquire._classify_downloads(tmp_path)
+    assert video.name == "source_video.webm"
+    assert thumb.name == "source_video.avif"
+
+def test_classify_no_thumbnail(tmp_path):
+    (tmp_path / "source_video.mp4").write_bytes(b"v")
+    video, thumb = acquire._classify_downloads(tmp_path)
+    assert video.name == "source_video.mp4"
+    assert thumb is None
+
+def test_classify_no_video_raises(tmp_path):
+    import pytest
+    from karaoke_maker.pipeline import PipelineError
+    (tmp_path / "source_video.jpg").write_bytes(b"t")
+    with pytest.raises(PipelineError):
+        acquire._classify_downloads(tmp_path)
+
+def test_classify_picks_largest_video_when_multiple(tmp_path):
+    (tmp_path / "source_video.f137.mp4").write_bytes(b"small")
+    (tmp_path / "source_video.mp4").write_bytes(b"much larger contents here")
+    video, _ = acquire._classify_downloads(tmp_path)
+    assert video.name == "source_video.mp4"

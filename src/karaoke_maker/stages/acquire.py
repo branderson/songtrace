@@ -5,6 +5,18 @@ from pathlib import Path
 from ..media import ffmpeg
 from ..pipeline import Ctx, PipelineError, Stage
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"}
+
+
+def _classify_downloads(dest: Path) -> tuple[Path, Path | None]:
+    files = list(dest.glob("source_video.*"))
+    thumbs = [p for p in files if p.suffix.lower() in IMAGE_EXTENSIONS]
+    videos = [p for p in files if p.suffix.lower() not in IMAGE_EXTENSIONS]
+    if not videos:
+        raise PipelineError("yt-dlp produced no video file")
+    video = max(videos, key=lambda p: p.stat().st_size)
+    return video, thumbs[0] if thumbs else None
+
 
 def download_youtube(url: str, dest: Path) -> tuple[Path, Path | None]:
     import yt_dlp
@@ -16,13 +28,7 @@ def download_youtube(url: str, dest: Path) -> tuple[Path, Path | None]:
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.extract_info(url, download=True)
-    videos = [p for p in dest.glob("source_video.*")
-              if p.suffix not in (".jpg", ".png", ".webp")]
-    if not videos:
-        raise PipelineError("yt-dlp produced no video file")
-    thumbs = [p for p in dest.glob("source_video.*")
-              if p.suffix in (".jpg", ".png", ".webp")]
-    return videos[0], thumbs[0] if thumbs else None
+    return _classify_downloads(dest)
 
 
 def _run(ctx: Ctx) -> None:
