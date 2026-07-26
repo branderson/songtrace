@@ -1,0 +1,38 @@
+[project]
+name = "karaoke-maker"
+version = "0.1.0"
+description = "Generate UltraStar/Melody Mania karaoke songs from a video and reference lyrics"
+requires-python = ">=3.11"
+dependencies = [
+    "yt-dlp",
+    "demucs",
+    "torch",
+    "torchaudio",
+    "torchcrepe",
+    "librosa",
+    "soundfile",
+    "numpy",
+    "pyphen",
+    "num2words",
+    "httpx",
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "pillow",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+karaoke-maker = "karaoke_maker.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
