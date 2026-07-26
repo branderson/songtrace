@@ -1,0 +1,11 @@
+whisper_url = "http://whisper.intranet:9000/v1"
+# whisper_api_key = ""
+# whisper_model = "whisper-1"
+output_dir = "/data/output"
+work_dir = "/data/work"
+creator = "brad"
+# demucs_model = "htdemucs_ft"
+# crepe_model = "full"
+# device = "cuda"
+bind_host = "0.0.0.0"
+# port = 8000

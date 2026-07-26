@@ -1,0 +1,15 @@
+services:
+  karaoke-maker:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.toml:/config/config.toml:ro
+      - ./data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
