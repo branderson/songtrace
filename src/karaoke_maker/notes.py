@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -25,12 +26,8 @@ class TimedNote:
     low_confidence: bool
 
 
-def _midi(hz):
-    return 69 + 12 * np.log2(hz / 440.0)
-
-
 def hz_to_midi_float(hz: float) -> float:
-    return float(_midi(hz))
+    return 69 + 12 * math.log2(hz / 440.0)
 
 
 def hz_to_ultrastar(hz: float) -> int:
@@ -44,7 +41,7 @@ def segment_span(times, f0, conf, start: float, end: float
     t = times[mask]
     if len(t) == 0:
         return []
-    midi = _midi(f0[mask])
+    midi = 69 + 12 * np.log2(f0[mask] / 440.0)
     segs: list[tuple[float, float, float]] = []
 
     def emit(a: int, b: int) -> None:
@@ -102,13 +99,34 @@ def build_notes(rows: list[dict], times, f0, conf, language: str | None
         for i, (s, e, midi) in enumerate(segs):
             text = _text(sylls[i], i, line_initial) if i < len(sylls) else "~"
             notes.append(_note(s, e - s, round(midi) - 60, text, low))
+    _deoverlap(notes)
     return notes, breaks, _warnings(notes)
 
 
 def _note(start: float, duration: float, pitch: int, text: str,
           low: bool) -> TimedNote:
-    return TimedNote(float(start), max(float(duration), MIN_NOTE_SEC),
-                     int(pitch), text, low)
+    return TimedNote(float(start), float(duration), int(pitch), text, low)
+
+
+def _deoverlap(notes: list[TimedNote]) -> None:
+    """Give every note a positive length without letting notes collide.
+
+    Notes are grown to MIN_NOTE_SEC (alignment hands us zero-length words, and
+    subdividing a short word by syllable makes very short slices) but only into
+    space the next note isn't using; where there is no space at all the rest of
+    the song is nudged later.
+    """
+    limits = [math.inf] * len(notes)
+    for i in range(len(notes) - 2, -1, -1):
+        limits[i] = (notes[i + 1].start if notes[i + 1].start > notes[i].start
+                     else limits[i + 1])
+    cursor = -math.inf
+    for note, limit in zip(notes, limits):
+        note.start = max(note.start, cursor)
+        room = limit - note.start
+        note.duration = (min(max(note.duration, MIN_NOTE_SEC), room)
+                         if room > 0 else MIN_NOTE_SEC)
+        cursor = note.start + note.duration
 
 
 def _text(syllable: str, index: int, line_initial: bool) -> str:
@@ -141,7 +159,7 @@ def _warnings(notes: list[TimedNote]) -> list[str]:
         elif run:
             first, last = run[0], run[-1]
             warnings.append(
-                f"{len(run)} low-confidence notes near "
-                f"{_fmt(first.start)}–{_fmt(last.start + last.duration)}")
+                f"{len(run)} low-confidence note{'' if len(run) == 1 else 's'} "
+                f"near {_fmt(first.start)}–{_fmt(last.start + last.duration)}")
             run = []
     return warnings

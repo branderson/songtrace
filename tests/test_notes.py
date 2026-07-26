@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 from karaoke_maker.config import Config
 from karaoke_maker.notes import (
     MIN_NOTE_SEC, TimedNote, build_notes, hz_to_ultrastar, segment_span,
@@ -15,10 +16,24 @@ def flat_pitch(duration=10.0, hz=261.63):   # C4
     return times, np.full_like(times, hz), np.full_like(times, 0.9)
 
 
+def assert_no_overlap(notes):
+    for a, b in zip(notes, notes[1:]):
+        assert a.start < b.start
+        assert a.start + a.duration <= b.start
+    assert all(n.duration > 0 for n in notes)
+
+
 def test_hz_to_ultrastar():
     assert hz_to_ultrastar(261.63) == 0        # C4
     assert hz_to_ultrastar(440.0) == 9         # A4
     assert hz_to_ultrastar(220.0) == -3        # A3
+
+
+def test_hz_to_ultrastar_rejects_non_positive():
+    with pytest.raises(ValueError):
+        hz_to_ultrastar(0.0)
+    with pytest.raises(ValueError):
+        hz_to_ultrastar(-100.0)
 
 
 def test_segment_span_single_flat():
@@ -102,7 +117,7 @@ def test_build_notes_unvoiced_word_flagged():
     rows = [{"word": "hey", "start": 1.0, "end": 1.4, "score": 0.9, "line_index": 0}]
     notes, _, warnings = build_notes(rows, times, f0, conf, "English")
     assert notes[0].low_confidence and len(warnings) == 1
-    assert warnings[0] == "1 low-confidence notes near 0:01–0:01"
+    assert warnings[0] == "1 low-confidence note near 0:01–0:01"
 
 
 def test_build_notes_low_score_word_flagged():
@@ -113,14 +128,14 @@ def test_build_notes_low_score_word_flagged():
 
 
 def test_build_notes_unvoiced_word_inherits_previous_pitch():
-    times, f0, conf = flat_pitch()
+    times, f0, conf = flat_pitch(hz=440.0)      # A4 -> 9, not the fallback 0
     conf[300:] = 0.0
     rows = [
         {"word": "one", "start": 1.0, "end": 2.0, "score": 0.9, "line_index": 0},
         {"word": "two", "start": 4.0, "end": 4.5, "score": 0.9, "line_index": 0},
     ]
     notes, _, _ = build_notes(rows, times, f0, conf, "English")
-    assert notes[1].pitch == notes[0].pitch == 0
+    assert notes[1].pitch == notes[0].pitch == 9
     assert notes[1].low_confidence and not notes[0].low_confidence
 
 
@@ -153,6 +168,19 @@ def test_build_notes_more_syllables_than_segments():
         assert abs(a.start + a.duration - b.start) < 1e-6
 
 
+def test_build_notes_subdivides_the_widest_segment_first():
+    times = np.arange(0, 2.0, 0.01)
+    f0 = np.where(times < 1.1, 329.63, 261.63)   # 0.1s E4 then 0.9s C4 in-word
+    conf = np.full_like(times, 0.9)
+    rows = [{"word": "beautiful", "start": 1.0, "end": 2.0, "score": 0.9,
+             "line_index": 0}]
+    notes, _, _ = build_notes(rows, times, f0, conf, "English")
+    assert [n.text for n in notes] == ["beau", "ti", "ful"]
+    assert [n.pitch for n in notes] == [4, 0, 0]      # the 0.9s segment split
+    assert abs(notes[0].duration - 0.1) < 1e-6
+    assert abs(notes[1].duration - notes[2].duration) < 1e-6
+
+
 def test_build_notes_zero_duration_row_gets_minimum_length():
     times, f0, conf = flat_pitch()
     rows = [
@@ -161,7 +189,48 @@ def test_build_notes_zero_duration_row_gets_minimum_length():
     ]
     notes, _, _ = build_notes(rows, times, f0, conf, "English")
     assert notes[0].duration >= MIN_NOTE_SEC
-    assert all(n.duration > 0 for n in notes)
+    assert_no_overlap(notes)
+
+
+def test_build_notes_repeated_zero_duration_rows_stay_separate():
+    times, f0, conf = flat_pitch()
+    rows = [{"word": w, "start": 1.0, "end": 1.0, "score": 0.0, "line_index": 0}
+            for w in ("...", "...", "...", "...")]
+    rows.append({"word": "go", "start": 1.0, "end": 1.5, "score": 0.9,
+                 "line_index": 0})
+    notes, _, _ = build_notes(rows, times, f0, conf, "English")
+    assert len(notes) == 5
+    assert_no_overlap(notes)
+
+
+def test_build_notes_short_multisyllable_word_does_not_overlap():
+    times, f0, conf = flat_pitch()
+    rows = [
+        {"word": "reminds", "start": 8.92, "end": 8.99, "score": 0.9,
+         "line_index": 0},
+        {"word": "me", "start": 8.99, "end": 9.20, "score": 0.9, "line_index": 0},
+    ]
+    notes, _, _ = build_notes(rows, times, f0, conf, "English")
+    assert [n.text for n in notes] == ["re", "minds", " me"]
+    assert_no_overlap(notes)
+
+
+def test_build_notes_never_overlaps_on_dense_input():
+    rng = np.random.default_rng(11)
+    times = np.arange(0, 40.0, 0.01)
+    words = ["We", "count", "a", "beautiful", "number", "reminds", "us",
+             "everything", "we", "listed", "yesterday", "oh"]
+    for _ in range(8):
+        f0 = 220.0 * 2 ** (rng.integers(0, 12, len(times)) // 3 / 12.0)
+        conf = np.where(rng.random(len(times)) < 0.9, 0.9, 0.1)
+        rows, t = [], 0.5
+        for i in range(80):
+            dur = float(rng.uniform(0.06, 0.55))
+            rows.append({"word": words[i % len(words)], "start": t,
+                         "end": t + dur, "score": 0.9, "line_index": i // 6})
+            t += dur + float(rng.uniform(0.0, 0.15))
+        notes, _, _ = build_notes(rows, times, f0, conf, "English")
+        assert_no_overlap(notes)
 
 
 def test_build_notes_starts_are_non_decreasing():
@@ -172,15 +241,16 @@ def test_build_notes_starts_are_non_decreasing():
              "reminds", "us", "of", "everything", "we", "list"]
     rows = []
     for i, w in enumerate(words):
-        rows.append({"word": w, "start": 0.5 + i * 0.9, "end": 0.5 + i * 0.9 + 0.8,
+        dur = 0.8 if i % 3 else 0.07       # every third word sung very fast
+        rows.append({"word": w, "start": 0.5 + i * 0.9, "end": 0.5 + i * 0.9 + dur,
                      "score": 0.9 if i % 5 else 0.2, "line_index": i // 4})
     notes, breaks, warnings = build_notes(rows, times, f0, conf, "English")
     assert len(notes) >= len(words)
     starts = [n.start for n in notes]
     assert starts == sorted(starts)
     assert breaks == sorted(breaks) and len(breaks) == 2
-    assert all(n.duration > 0 for n in notes)
-    assert warnings and all("low-confidence notes near" in w for w in warnings)
+    assert_no_overlap(notes)
+    assert warnings and all("low-confidence note" in w for w in warnings)
 
 
 def test_build_notes_line_initial_after_break_has_no_space():
