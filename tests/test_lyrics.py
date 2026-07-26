@@ -25,3 +25,16 @@ def test_alignment_token():
     assert alignment_token("o'") == "o'"
     assert alignment_token("7") == "seven"
     assert alignment_token("...") == ""
+
+
+def test_alignment_token_no_internal_whitespace():
+    assert alignment_token("21") == "twentyone"
+    assert alignment_token("7th") == "seventh"
+
+
+def test_alignment_token_hyphenated_word():
+    assert alignment_token("well-known") == "wellknown"
+
+
+def test_alignment_token_curly_apostrophe():
+    assert alignment_token("don’t") == "don't"

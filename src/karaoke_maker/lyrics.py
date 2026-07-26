@@ -36,7 +36,8 @@ def alignment_token(word: str, language: str | None = None) -> str:
         except NotImplementedError:
             return " " + num2words(int(m[0])) + " "
 
+    word = word.replace("’", "'").replace("ʼ", "'")
     word = re.sub(r"\d+", expand, word)
     word = word.lower()
     word = re.sub(r"[^a-z'À-ɏЀ-ӿ ]", "", word)
-    return word.strip()
+    return re.sub(r"\s+", "", word)
