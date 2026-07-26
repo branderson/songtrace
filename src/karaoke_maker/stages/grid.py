@@ -2,15 +2,20 @@ import json
 from pathlib import Path
 
 from .. import grid
-from ..pipeline import Ctx, Stage, song_slug
+from ..pipeline import Ctx, PipelineError, Stage, song_slug
 from ..ultrastar import serialize_ultrastar
 
 
 def _run(ctx: Ctx) -> None:
     data = json.loads((ctx.work / "notes_sec.json").read_text())
     meta = json.loads((ctx.work / "meta.json").read_text())
-    bpm = ctx.inp.bpm_override or grid.scale_bpm(
-        grid.detect_bpm(ctx.work / "instrumental.wav"))
+    if ctx.inp.bpm_override is not None:
+        bpm = ctx.inp.bpm_override
+    else:
+        try:
+            bpm = grid.scale_bpm(grid.detect_bpm(ctx.work / "instrumental.wav"))
+        except ValueError:
+            raise PipelineError("could not detect a usable tempo - is the audio silent?")
     slug = song_slug(ctx.inp)
     video_ext = Path(meta["video_file"]).suffix
     headers = [("TITLE", ctx.inp.title), ("ARTIST", ctx.inp.artist)]
@@ -22,7 +27,10 @@ def _run(ctx: Ctx) -> None:
         headers.append(("YEAR", str(ctx.inp.year)))
     headers += [("CREATOR", ctx.cfg.creator), ("MP3", f"{slug}.mp3"),
                 ("COVER", f"{slug}.jpg"), ("VIDEO", f"{slug}{video_ext}")]
-    song = grid.to_ultrastar(data["notes"], data["breaks"], bpm, headers)
+    try:
+        song = grid.to_ultrastar(data["notes"], data["breaks"], bpm, headers)
+    except ValueError:
+        raise PipelineError("no notes were generated - the lyrics may not match the audio")
     (ctx.work / "song.txt").write_text(serialize_ultrastar(song), encoding="utf-8")
 
 

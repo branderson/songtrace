@@ -43,10 +43,18 @@ def _cmd_make(args) -> int:
     if bool(args.youtube) == bool(args.video):
         print("error: provide exactly one of --youtube / --video", file=sys.stderr)
         return 2
+    try:
+        lyrics_text = args.lyrics.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"error: could not read --lyrics file: {e}", file=sys.stderr)
+        return 2
+    except UnicodeDecodeError as e:
+        print(f"error: --lyrics file is not valid UTF-8 text: {e}", file=sys.stderr)
+        return 2
     cfg = load_config(args.config)
     inp = SongInput(
         title=args.title, artist=args.artist,
-        lyrics_text=args.lyrics.read_text(encoding="utf-8"),
+        lyrics_text=lyrics_text,
         youtube_url=args.youtube, video_path=args.video,
         genre=args.genre, year=args.year, language=args.language,
         cover_path=args.cover, bpm_override=args.bpm)

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from karaoke_maker.config import Config
 from karaoke_maker.grid import scale_bpm, to_ultrastar
-from karaoke_maker.pipeline import Ctx, SongInput
+from karaoke_maker.pipeline import Ctx, PipelineError, SongInput
 from karaoke_maker.stages import all_stages, grid as grid_stage_mod
 from karaoke_maker.ultrastar import (
     LineBreak, Note, get_header, parse_ultrastar,
@@ -209,6 +209,49 @@ def test_grid_stage_uses_bpm_override(tmp_path, monkeypatch):
     grid_stage_mod.grid_stage().run(ctx)
     song = parse_ultrastar((work / "song.txt").read_text(encoding="utf-8"))
     assert get_header(song, "BPM") == "333"
+
+
+def test_grid_stage_honours_zero_bpm_override(tmp_path, monkeypatch):
+    """bpm_override=0.0 must not be mistaken for 'not provided' (falsy-zero bug)."""
+    work = tmp_path / "w"
+    write_work(work)
+
+    def boom(path):
+        raise AssertionError("detect_bpm must not run with an explicit override")
+
+    monkeypatch.setattr(grid_stage_mod.grid, "detect_bpm", boom)
+    captured = {}
+
+    def fake_to_ultrastar(notes, breaks, file_bpm, headers):
+        captured["bpm"] = file_bpm
+        return to_ultrastar(notes, breaks, 240.0, headers)
+
+    monkeypatch.setattr(grid_stage_mod.grid, "to_ultrastar", fake_to_ultrastar)
+    ctx = make_ctx(work, bpm_override=0.0)
+    grid_stage_mod.grid_stage().run(ctx)
+    assert captured["bpm"] == 0.0
+
+
+def test_grid_stage_reports_unusable_tempo_as_pipeline_error(tmp_path, monkeypatch):
+    work = tmp_path / "w"
+    write_work(work)
+    monkeypatch.setattr(grid_stage_mod.grid, "detect_bpm", lambda p: 0.0)
+    ctx = make_ctx(work)
+    with pytest.raises(PipelineError, match="tempo"):
+        grid_stage_mod.grid_stage().run(ctx)
+
+
+def test_grid_stage_reports_no_notes_as_pipeline_error(tmp_path, monkeypatch):
+    work = tmp_path / "w"
+    work.mkdir()
+    (work / "notes_sec.json").write_text(json.dumps(
+        {"notes": [], "breaks": [], "warnings": []}))
+    (work / "meta.json").write_text(json.dumps(
+        {"video_file": "source_video.webm", "thumbnail": "source_video.jpg"}))
+    monkeypatch.setattr(grid_stage_mod.grid, "detect_bpm", lambda p: 120.0)
+    ctx = make_ctx(work)
+    with pytest.raises(PipelineError, match="no notes"):
+        grid_stage_mod.grid_stage().run(ctx)
 
 
 def test_grid_stage_registered():
