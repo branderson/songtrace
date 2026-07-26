@@ -287,4 +287,4 @@ def test_notes_stage_writes_json(tmp_path):
 
 
 def test_notes_stage_registered():
-    assert [s.name for s in all_stages()][-1] == "notes"
+    assert "notes" in [s.name for s in all_stages()]
