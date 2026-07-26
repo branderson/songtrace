@@ -65,16 +65,23 @@ form.addEventListener("submit", async (e) => {
 });
 
 function renderJobs(jobs) {
-  const rows = jobs.map(j => `
-    <tr data-id="${j.id}">
-      <td>${j.title}</td><td>${j.artist}</td><td>${j.status}</td><td>${j.stage ?? ""}</td>
-    </tr>`).join("");
-  jobsDiv.innerHTML = `<table>
-    <thead><tr><th>Title</th><th>Artist</th><th>Status</th><th>Stage</th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
-  jobsDiv.querySelectorAll("tr[data-id]").forEach(row => {
-    row.addEventListener("click", () => selectJob(row.dataset.id));
-  });
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  thead.innerHTML = "<tr><th>Title</th><th>Artist</th><th>Status</th><th>Stage</th></tr>";
+  const tbody = document.createElement("tbody");
+  for (const j of jobs) {
+    const row = document.createElement("tr");
+    row.dataset.id = j.id;
+    for (const value of [j.title, j.artist, j.status, j.stage ?? ""]) {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.appendChild(cell);
+    }
+    row.addEventListener("click", () => selectJob(j.id));
+    tbody.appendChild(row);
+  }
+  table.append(thead, tbody);
+  jobsDiv.replaceChildren(table);
 }
 
 async function refreshJobs() {

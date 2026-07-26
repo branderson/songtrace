@@ -1,4 +1,5 @@
 import io
+import threading
 import time
 
 from fastapi.testclient import TestClient
@@ -139,3 +140,25 @@ def test_uploaded_video_filename_is_sanitised(tmp_path):
     assert saved_path.resolve().parent == uploads_root / job_id
     assert saved_path.name == "passwd"
     assert not (tmp_path / "etc" / "passwd").exists()
+
+
+def test_jobs_run_one_at_a_time(tmp_path):
+    counter_lock = threading.Lock()
+    state = {"current": 0, "max": 0}
+
+    def slow_runner(inp, cfg, log=print, force_from=None, stages=None):
+        with counter_lock:
+            state["current"] += 1
+            state["max"] = max(state["max"], state["current"])
+        time.sleep(0.1)
+        with counter_lock:
+            state["current"] -= 1
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, slow_runner)
+    ids = [client.post("/api/jobs", data={
+        "title": f"T{i}", "artist": "A", "lyrics": "x", "youtube_url": "http://y"}
+        ).json()["id"] for i in range(4)]
+    for job_id in ids:
+        wait_status(client, job_id, "done")
+    assert state["max"] == 1

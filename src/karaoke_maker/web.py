@@ -1,12 +1,14 @@
 import math
 import queue
 import re
+import shutil
 import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 from .config import Config
@@ -35,6 +37,11 @@ def _safe_filename(name: str | None, default: str) -> str:
     return safe if safe not in ("", ".", "..") else default
 
 
+async def _save_upload(upload: UploadFile, dest: Path) -> None:
+    with dest.open("wb") as f:
+        await run_in_threadpool(shutil.copyfileobj, upload.file, f)
+
+
 def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     app = FastAPI()
     jobs: dict[str, Job] = {}
@@ -49,7 +56,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 job = jobs[job_id]
                 job.status = "running"
 
-            def log(msg: str):
+            def log(msg: str, job=job):
                 with lock:
                     job.log.append(msg)
                     if m := STAGE_LINE.match(msg):
@@ -60,8 +67,8 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 with lock:
                     job.status = "done"
                     job.output_dir = str(result.output_dir)
-                    job.warnings = result.warnings
-            except Exception as e:
+                    job.warnings = list(result.warnings)
+            except BaseException as e:
                 with lock:
                     job.status = "failed"
                     job.error = str(e)
@@ -91,11 +98,11 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         if has_video:
             updir.mkdir(parents=True, exist_ok=True)
             video_path = updir / _safe_filename(video.filename, "video")
-            video_path.write_bytes(await video.read())
+            await _save_upload(video, video_path)
         if cover and cover.filename:
             updir.mkdir(parents=True, exist_ok=True)
             cover_path = updir / _safe_filename(cover.filename, "cover")
-            cover_path.write_bytes(await cover.read())
+            await _save_upload(cover, cover_path)
 
         inp = SongInput(title=title, artist=artist, lyrics_text=lyrics,
                          youtube_url=youtube_url, video_path=video_path,
@@ -124,7 +131,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             return {"id": job.id, "title": job.title, "artist": job.artist,
                     "status": job.status, "stage": job.stage,
                     "log": job.log[-100:], "output_dir": job.output_dir,
-                    "warnings": job.warnings, "error": job.error}
+                    "warnings": list(job.warnings), "error": job.error}
 
     return app
 
