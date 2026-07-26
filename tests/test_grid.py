@@ -213,4 +213,4 @@ def test_grid_stage_uses_bpm_override(tmp_path, monkeypatch):
 
 def test_grid_stage_registered():
     names = [s.name for s in all_stages()]
-    assert names[-1] == "grid" and names[-2] == "notes"
+    assert names[-1] == "package" and names[-2] == "grid"
