@@ -142,6 +142,26 @@ def test_uploaded_video_filename_is_sanitised(tmp_path):
     assert not (tmp_path / "etc" / "passwd").exists()
 
 
+def test_upload_dir_cleaned_up_after_success(tmp_path):
+    client, cfg = make_client(tmp_path, ok_runner)
+    resp = client.post("/api/jobs", data={"title": "T", "artist": "A", "lyrics": "x"},
+                        files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4")})
+    job_id = resp.json()["id"]
+    wait_status(client, job_id, "done")
+    assert not (cfg.work_dir / "uploads" / job_id).exists()
+
+
+def test_upload_dir_cleaned_up_after_failure(tmp_path):
+    def bad_runner(*a, **kw):
+        raise PipelineError("boom")
+    client, cfg = make_client(tmp_path, bad_runner)
+    resp = client.post("/api/jobs", data={"title": "T", "artist": "A", "lyrics": "x"},
+                        files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4")})
+    job_id = resp.json()["id"]
+    wait_status(client, job_id, "failed")
+    assert not (cfg.work_dir / "uploads" / job_id).exists()
+
+
 def test_jobs_run_one_at_a_time(tmp_path):
     counter_lock = threading.Lock()
     state = {"current": 0, "max": 0}

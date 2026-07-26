@@ -20,3 +20,19 @@ def test_transcribe_parses_segments(tmp_path):
     assert segs == [TranscriptSegment(start=0.5, end=2.0, text="hello world")]
     assert seen["url"] == "http://w:9000/v1/audio/transcriptions"
     assert seen["auth"] == "Bearer sekrit"
+
+
+def test_transcribe_maps_language_to_iso_code(tmp_path):
+    audio = tmp_path / "v.wav"
+    audio.write_bytes(b"RIFF")
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read().decode("utf-8", errors="replace")
+        return httpx.Response(200, json={"segments": []})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    cfg = Config(whisper_url="http://w:9000/v1")
+    transcribe(cfg, audio, language="Japanese", client=client)
+    assert 'name="language"' in seen["body"]
+    assert "\r\n\r\nja\r\n" in seen["body"]

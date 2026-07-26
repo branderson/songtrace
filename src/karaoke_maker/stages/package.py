@@ -2,7 +2,7 @@ import json
 import shutil
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from ..media import ffmpeg, ffprobe_codec
 from ..pipeline import Ctx, Stage, song_slug
@@ -60,16 +60,21 @@ def _run(ctx: Ctx) -> None:
     cover_src = ctx.inp.cover_path
     if cover_src is None and meta.get("thumbnail"):
         cover_src = ctx.work / meta["thumbnail"]
+    cover_ok = False
     if cover_src and Path(cover_src).exists():
-        prepare_cover(Path(cover_src), out / f"{slug}.jpg")
+        try:
+            prepare_cover(Path(cover_src), out / f"{slug}.jpg")
+            cover_ok = True
+        except UnidentifiedImageError:
+            ctx.log("cover file is not a valid image; dropping #COVER header")
     else:
         ctx.log("no cover available; dropping #COVER header")
+    if not cover_ok:
         _set_header(txt, "COVER", None)
+    (ctx.work / "package.done").write_text("")
 
 
 def package_stage() -> Stage:
     def outputs(ctx: Ctx):
-        slug = song_slug(ctx.inp)
-        out = ctx.cfg.output_dir / slug
-        return [out / f"{slug}.txt", out / f"{slug}.mp3"]
+        return [ctx.work / "package.done"]
     return Stage(name="package", outputs=outputs, run=_run)

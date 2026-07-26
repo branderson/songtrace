@@ -1,10 +1,13 @@
 import json
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from karaoke_maker.config import Config
-from karaoke_maker.pipeline import STAGE_ORDER, Ctx, SongInput
+from karaoke_maker.pipeline import (
+    STAGE_ORDER, Ctx, PipelineError, SongInput, run_pipeline, song_slug,
+)
 from karaoke_maker.stages import all_stages, package
 from karaoke_maker.ultrastar import get_header, parse_ultrastar
 
@@ -29,6 +32,21 @@ def make_cover(tmp_path):
     p = tmp_path / "c.png"
     Image.new("RGB", (640, 480), "red").save(p)
     return p
+
+
+def make_pipeline_inputs(tmp_path, cover=None):
+    """Set up inputs at the exact work-dir path run_pipeline() would use."""
+    cfg = Config(whisper_url="u", output_dir=tmp_path / "out",
+                 work_dir=tmp_path / "work_root")
+    inp = SongInput(title="T", artist="A", lyrics_text="x", cover_path=cover)
+    work = cfg.work_dir / song_slug(inp)
+    work.mkdir(parents=True)
+    (work / "song.txt").write_text(SONG_TXT)
+    (work / "audio.wav").write_bytes(b"w")
+    (work / "source_video.webm").write_bytes(b"v")
+    (work / "meta.json").write_text(json.dumps(
+        {"video_file": "source_video.webm", "thumbnail": None}))
+    return inp, cfg
 
 
 def test_package_copies_compatible_video(tmp_path, monkeypatch):
@@ -81,12 +99,77 @@ def test_package_uses_work_thumbnail_when_no_cover_path(tmp_path, monkeypatch):
     assert get_header(song, "COVER") == "A - T.jpg"
 
 
-def test_package_outputs_txt_and_mp3():
+def test_package_outputs_done_marker():
     ctx_outputs = package.package_stage().outputs
     cfg = Config(whisper_url="u", output_dir=Path("out"), work_dir=Path("work"))
     inp = SongInput(title="T", artist="A", lyrics_text="x")
     ctx = Ctx(inp=inp, cfg=cfg, work=Path("work"), log=lambda m: None)
-    assert ctx_outputs(ctx) == [Path("out/A - T/A - T.txt"), Path("out/A - T/A - T.mp3")]
+    assert ctx_outputs(ctx) == [Path("work/package.done")]
+
+
+def test_package_corrupt_cover_degrades_to_no_cover(tmp_path, monkeypatch):
+    monkeypatch.setattr(package, "ffmpeg", lambda *a: Path(a[-1]).write_bytes(b"m"))
+    monkeypatch.setattr(package, "ffprobe_codec", lambda p: ("webm", "vp9"))
+    bad_cover = tmp_path / "bad.jpg"
+    bad_cover.write_bytes(b"not an image")
+    ctx = make_ctx(tmp_path, cover=bad_cover)
+    package.package_stage().run(ctx)
+    out = tmp_path / "out" / "A - T"
+    assert not (out / "A - T.jpg").exists()
+    song = parse_ultrastar((out / "A - T.txt").read_text())
+    assert get_header(song, "COVER") is None
+
+
+def test_package_partial_failure_is_not_cached(tmp_path, monkeypatch):
+    monkeypatch.setattr(package, "ffmpeg", lambda *a: Path(a[-1]).write_bytes(b"m"))
+
+    def boom(p):
+        raise PipelineError("ffprobe failed")
+
+    monkeypatch.setattr(package, "ffprobe_codec", boom)
+    ctx = make_ctx(tmp_path, cover=make_cover(tmp_path))
+    with pytest.raises(PipelineError):
+        package.package_stage().run(ctx)
+    out = tmp_path / "out" / "A - T"
+    assert (out / "A - T.txt").exists()
+    assert (out / "A - T.mp3").exists()
+    assert not (out / "A - T.webm").exists()
+    assert not package.package_stage().outputs(ctx)[0].exists()
+
+
+def test_package_success_is_cached_by_pipeline(tmp_path, monkeypatch):
+    monkeypatch.setattr(package, "ffmpeg", lambda *a: Path(a[-1]).write_bytes(b"m"))
+    monkeypatch.setattr(package, "ffprobe_codec", lambda p: ("webm", "vp9"))
+    inp, cfg = make_pipeline_inputs(tmp_path, cover=make_cover(tmp_path))
+    stage = package.package_stage()
+    run_pipeline(inp, cfg, log=lambda m: None, stages=[stage])
+    logs = []
+    run_pipeline(inp, cfg, log=logs.append, stages=[stage])
+    assert any("[package] cached, skipping" in m for m in logs)
+
+
+def test_package_retry_after_partial_failure_completes_folder(tmp_path, monkeypatch):
+    calls = {"n": 0}
+
+    def flaky_ffprobe(p):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PipelineError("ffprobe failed")
+        return ("webm", "vp9")
+
+    monkeypatch.setattr(package, "ffmpeg", lambda *a: Path(a[-1]).write_bytes(b"m"))
+    monkeypatch.setattr(package, "ffprobe_codec", flaky_ffprobe)
+    inp, cfg = make_pipeline_inputs(tmp_path, cover=make_cover(tmp_path))
+    stage = package.package_stage()
+    with pytest.raises(PipelineError):
+        run_pipeline(inp, cfg, log=lambda m: None, stages=[stage])
+    out = cfg.output_dir / "A - T"
+    assert (out / "A - T.txt").exists() and (out / "A - T.mp3").exists()
+    assert not (out / "A - T.webm").exists()
+
+    run_pipeline(inp, cfg, log=lambda m: None, stages=[stage])
+    assert (out / "A - T.webm").exists()
+    assert (out / "A - T.jpg").exists()
 
 
 def test_slash_in_title_is_stripped_from_folder_and_filenames(tmp_path, monkeypatch):

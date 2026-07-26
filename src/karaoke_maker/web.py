@@ -72,6 +72,11 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 with lock:
                     job.status = "failed"
                     job.error = str(e)
+            finally:
+                # safe: acquire copies the upload into the per-song work dir
+                # and package reads cover_path directly, both inside runner()
+                # above, before this cleanup runs.
+                shutil.rmtree(cfg.work_dir / "uploads" / job_id, ignore_errors=True)
 
     threading.Thread(target=worker, daemon=True).start()
 

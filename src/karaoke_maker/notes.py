@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import numpy as np
 import pyphen
 
+from .languages import LANGUAGES
+
 CONF_MASK = 0.5          # pitch frames below this are unvoiced
 LOW_SCORE = 0.5          # word alignment score below this -> low_confidence
 SPLIT_SEMITONES = 0.8
@@ -11,9 +13,6 @@ MIN_SEG_SEC = 0.05
 MIN_NOTE_SEC = 0.05      # alignment may hand us zero-length words
 HOP_SEC = 0.01           # pitch stage hop
 
-_PYPHEN = {"english": "en_US", "german": "de_DE", "spanish": "es",
-           "french": "fr", "italian": "it", "portuguese": "pt",
-           "dutch": "nl_NL"}
 _SYLL_SEP = "\0"         # sentinel so literal hyphens survive syllabification
 
 
@@ -67,7 +66,10 @@ def segment_span(times, f0, conf, start: float, end: float
 
 
 def syllabify(word: str, language: str | None) -> list[str]:
-    code = _PYPHEN.get((language or "english").lower(), "en_US")
+    entry = LANGUAGES.get((language or "english").lower())
+    code = entry.pyphen if entry else "en_US"
+    if code is None:
+        return [word]
     try:
         dic = pyphen.Pyphen(lang=code)
     except KeyError:

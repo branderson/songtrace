@@ -86,6 +86,13 @@ def test_syllabify_preserves_word_characters():
     assert "".join(syllabify("beautiful", "English")) == "beautiful"
 
 
+def test_syllabify_language_without_pyphen_dict_is_not_mishandled_as_english():
+    # Japanese is a known language (e.g. to whisper_client) but has no pyphen
+    # dictionary; it must not silently fall back to English hyphenation rules.
+    assert syllabify("beautiful", "Japanese") == ["beautiful"]
+    assert syllabify("beautiful", "English") == ["beau", "ti", "ful"]
+
+
 def test_build_notes_basic_line():
     times, f0, conf = flat_pitch()
     rows = [

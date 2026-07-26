@@ -2,9 +2,9 @@ import re
 from dataclasses import dataclass
 from num2words import num2words
 
+from .languages import LANGUAGES
+
 SECTION_RE = re.compile(r"^\s*[\[(].*[\])]\s*$")
-_LANG_MAP = {"english": "en", "german": "de", "spanish": "es", "french": "fr",
-             "italian": "it", "portuguese": "pt", "dutch": "nl"}
 
 
 @dataclass
@@ -28,7 +28,8 @@ def normalize_lyrics(text: str) -> RefLyrics:
 
 
 def alignment_token(word: str, language: str | None = None) -> str:
-    lang = _LANG_MAP.get((language or "english").lower(), "en")
+    entry = LANGUAGES.get((language or "english").lower())
+    lang = entry.iso if entry else "en"
 
     def expand(m):
         try:

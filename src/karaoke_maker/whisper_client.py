@@ -4,9 +4,7 @@ from pathlib import Path
 import httpx
 
 from .config import Config
-
-_ISO = {"english": "en", "german": "de", "spanish": "es", "french": "fr",
-        "italian": "it", "portuguese": "pt", "dutch": "nl", "japanese": "ja"}
+from .languages import LANGUAGES
 
 
 @dataclass
@@ -23,7 +21,8 @@ def transcribe(cfg: Config, audio_path: Path, language: str | None = None,
         headers["Authorization"] = f"Bearer {cfg.whisper_api_key}"
     data = {"model": cfg.whisper_model, "response_format": "verbose_json"}
     if language:
-        data["language"] = _ISO.get(language.lower(), language)
+        entry = LANGUAGES.get(language.lower())
+        data["language"] = entry.iso if entry else language
     own = client is None
     client = client or httpx.Client(timeout=600)
     try:
