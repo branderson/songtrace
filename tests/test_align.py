@@ -112,6 +112,24 @@ def test_all_words_unalignable_in_section(tmp_path, monkeypatch):
     assert rows[-1]["end"] <= 5.0
 
 
+def test_non_chronological_transcript(tmp_path, monkeypatch):
+    transcript = [{"start": 30.0, "end": 33.0, "text": "four five six seven eight"},
+                  {"start": 1.0, "end": 4.0, "text": "it's one two three"}]
+    rows = run_align(tmp_path, monkeypatch, transcript=transcript)
+    check_invariants(rows, LYRICS)
+    assert len({r["start"] for r in rows}) == len(rows)
+    assert rows[3]["end"] <= 5.0
+    assert rows[4]["start"] >= 29.0
+
+
+def test_inverted_section_does_not_collapse(tmp_path, monkeypatch):
+    monkeypatch.setattr(align, "vocal_sections", lambda segments: [(29.0, 5.0)])
+    rows = run_align(tmp_path, monkeypatch)
+    check_invariants(rows, LYRICS)
+    assert len({r["start"] for r in rows}) == len(rows)
+    assert rows[0]["start"] >= 5.0 and rows[-1]["end"] <= 29.0
+
+
 def test_words_split_across_sections(tmp_path, monkeypatch):
     transcript = [{"start": 1.0, "end": 4.0, "text": "it's one two three"},
                   {"start": 30.0, "end": 33.0, "text": "four five six seven eight"}]

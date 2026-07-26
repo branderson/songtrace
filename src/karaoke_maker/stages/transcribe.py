@@ -8,9 +8,9 @@ from ..whisper_client import TranscriptSegment, transcribe
 
 def vocal_sections(segments, min_gap: float = 6.0, pad: float = 1.0):
     sections = []
-    for s in segments:
+    for s in sorted(segments, key=lambda s: s.start):
         if sections and s.start - sections[-1][1] < min_gap:
-            sections[-1][1] = s.end
+            sections[-1][1] = max(sections[-1][1], s.end)
         else:
             sections.append([s.start, s.end])
     return [(max(0.0, a - pad), b + pad) for a, b in sections]

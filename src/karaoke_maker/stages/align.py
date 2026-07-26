@@ -103,7 +103,8 @@ def _run(ctx: Ctx) -> None:
         raise PipelineError(
             f"lyrics don't match audio (similarity {sim:.2f}) — "
             "wrong lyrics or wrong recording?")
-    sections = vocal_sections(segments)
+    # normalised so an inverted span can never collapse a section onto one instant
+    sections = [(min(a, b), max(a, b)) for a, b in vocal_sections(segments)]
     vocals = ctx.work / "vocals.wav"
     rows = []
     for sec, line_idxs in zip(sections, _assign_lines_to_sections(ref, sections)):
