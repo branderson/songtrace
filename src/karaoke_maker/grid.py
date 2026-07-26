@@ -15,8 +15,8 @@ def detect_bpm(instrumental_path: Path) -> float:
 
 def scale_bpm(bpm: float) -> float:
     """Fold a tempo into UltraStar's usual [200, 400) file-BPM range."""
-    if bpm <= 0:
-        raise ValueError(f"cannot scale non-positive bpm {bpm}")
+    if not math.isfinite(bpm) or bpm <= 0:
+        raise ValueError(f"cannot scale bpm {bpm}")
     while bpm < 200:
         bpm *= 2
     while bpm >= 400:
@@ -26,6 +26,8 @@ def scale_bpm(bpm: float) -> float:
 
 def to_ultrastar(notes: list[dict], breaks: list[float], file_bpm: float,
                  headers: list[tuple[str, str]]) -> UltraStarSong:
+    if not notes:
+        raise ValueError("no notes to place on the beat grid")
     gap_ms = round(notes[0]["start"] * 1000)
     spb = 60 / (4 * file_bpm)
 

@@ -36,9 +36,15 @@ def test_scale_bpm():
     assert scale_bpm(450.0) == 225.0
 
 
-def test_scale_bpm_rejects_non_positive():
+@pytest.mark.parametrize("bpm", [0.0, -120.0, float("inf"), float("nan")])
+def test_scale_bpm_rejects_unusable_tempo(bpm):
     with pytest.raises(ValueError):
-        scale_bpm(0.0)
+        scale_bpm(bpm)
+
+
+def test_to_ultrastar_rejects_empty_notes():
+    with pytest.raises(ValueError):
+        to_ultrastar([], [], 240.0, [])
 
 
 def test_to_ultrastar_conversion():
@@ -87,6 +93,15 @@ def test_line_break_pushed_past_the_preceding_note():
     assert n0.beat + n0.length == 9
     assert br == LineBreak(beat=9)
     assert n1.beat >= br.beat
+    assert_ordered(song.body)
+
+
+def test_line_break_on_a_note_start_precedes_that_note():
+    """No gap across a line boundary puts the break exactly on the next onset."""
+    notes = [note(0.0, 0.5, 0, "end"), note(0.5, 0.5, 2, "New")]
+    song = to_ultrastar(notes, [0.5], 240.0, [])
+    assert song.body[1] == LineBreak(beat=8)
+    assert [n.text for n in song.body if isinstance(n, Note)] == ["end", "New"]
     assert_ordered(song.body)
 
 
