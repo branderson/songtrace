@@ -52,6 +52,16 @@ def test_failure_reported(tmp_path):
     assert job["error"] == "boom"
 
 
+def test_submit_normalises_a_blank_genre_to_none(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, capture_runner_factory(seen))
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x",
+        "youtube_url": "http://y", "genre": ""})
+    wait_status(client, resp.json()["id"], "done")
+    assert seen[0]["inp"].genre is None
+
+
 def test_requires_one_source(tmp_path):
     client, _ = make_client(tmp_path, ok_runner)
     resp = client.post("/api/jobs", data={"title": "T", "artist": "A", "lyrics": "x"})
@@ -599,6 +609,7 @@ def test_lineage_marker_survives_in_the_accessibility_tree():
     html = _index_html()
     body = _fn_body(html, "paintCard")
     assert "rebuilt_from" in body
+    assert '" rebuilt"' in body
     assert '"sr-only"' in _fn_body(html, "jobCard")
 
 
@@ -813,6 +824,20 @@ def test_rebuild_inherits_the_parents_source(tmp_path):
                         data=rebuild_form(youtube_url="", year="1998")).json()["id"]
     wait_status(client, child, "done")
     assert seen[1]["inp"].video_path == seen[0]["inp"].video_path
+
+
+def test_rebuild_inherits_the_parents_cover(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, capture_runner_factory(seen))
+    resp = client.post("/api/jobs", data={"title": "T", "artist": "A", "lyrics": "x",
+                                          "youtube_url": "http://y"},
+                        files={"cover": ("c.jpg", io.BytesIO(b"img"), "image/jpeg")})
+    parent = resp.json()["id"]
+    wait_status(client, parent, "done")
+    child = client.post(f"/api/jobs/{parent}/rebuild",
+                        data=rebuild_form(year="1998")).json()["id"]
+    wait_status(client, child, "done")
+    assert seen[1]["inp"].cover_path == seen[0]["inp"].cover_path
 
 
 def test_rebuild_rejects_a_missing_upload_that_would_be_needed(tmp_path):

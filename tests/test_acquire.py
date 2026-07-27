@@ -38,6 +38,12 @@ def test_youtube(tmp_path, monkeypatch):
     assert meta["video_file"] == "source_video.webm"
     assert meta["thumbnail"] == "source_video.jpg"
 
+def test_outputs_are_meta_and_audio(tmp_path):
+    """_require_source in web.py hardcodes these filenames; pin them here."""
+    ctx = make_ctx(tmp_path, youtube_url="https://yt/x")
+    outputs = acquire.acquire_stage().outputs(ctx)
+    assert [p.name for p in outputs] == ["meta.json", "audio.wav"]
+
 def test_requires_exactly_one_source(tmp_path):
     import pytest
     from karaoke_maker.pipeline import PipelineError

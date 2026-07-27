@@ -194,6 +194,8 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                       language: str | None = Form(None), bpm: float | None = Form(None),
                       video: UploadFile | None = File(None),
                       cover: UploadFile | None = File(None)):
+        youtube_url, genre, language = (youtube_url or None, genre or None,
+                                        language or None)
         has_video = bool(video and video.filename)
         if bool(youtube_url) == has_video:
             raise HTTPException(400, "provide exactly one of youtube_url / video")
