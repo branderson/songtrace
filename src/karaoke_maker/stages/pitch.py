@@ -9,7 +9,9 @@ def track_pitch(vocals_path: Path, model: str, device: str):
     import torchaudio
     import torchcrepe
 
-    waveform, sr = torchaudio.load(str(vocals_path))
+    from ..audio_io import load_wav
+
+    waveform, sr = load_wav(vocals_path)
     waveform = waveform.mean(0, keepdim=True)
     waveform = torchaudio.functional.resample(waveform, sr, 16000)
     f0, periodicity = torchcrepe.predict(

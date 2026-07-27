@@ -23,7 +23,9 @@ def force_align_section(vocals_path: Path, start: float, end: float,
     import torchaudio
     from torchaudio.pipelines import MMS_FA as bundle
 
-    waveform, sr = torchaudio.load(str(vocals_path))
+    from ..audio_io import load_wav
+
+    waveform, sr = load_wav(vocals_path)
     waveform = waveform.mean(0, keepdim=True)
     lo, hi = int(start * sr), min(int(end * sr), waveform.shape[1])
     waveform = torchaudio.functional.resample(
