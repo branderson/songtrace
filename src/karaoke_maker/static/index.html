@@ -68,6 +68,15 @@ body {
 
 .empty-note { margin: 0; font-size: 0.82rem; color: var(--text-muted); }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* --- sidebar ------------------------------------------------------------ */
 
 #sidebar {
@@ -415,7 +424,8 @@ button { cursor: pointer; }
 
 @media (max-width: 1180px) {
   #stage-track { gap: 11px; }
-  .stage:not(.stage-active) .stage-label { display: none; }
+  /* clipped rather than display:none so the names stay in the accessibility tree */
+  .stage:not(.stage-active) .stage-label { position: absolute; clip-path: inset(50%); }
 }
 
 /* --- responsive --------------------------------------------------------- */
@@ -649,16 +659,22 @@ function renderStageTrack(job) {
   const idx = job.stage ? STAGES.indexOf(job.stage) : -1;
   const dots = STAGES.map((name, i) => {
     const done = job.status === "done" || i < idx;
+    const active = !done && i === idx;
     const dot = document.createElement("span");
-    dot.className = "stage " + (done ? "stage-done" : i === idx ? "stage-active" : "stage-pending");
+    dot.className = "stage " + (done ? "stage-done" : active ? "stage-active" : "stage-pending");
+    if (active) dot.setAttribute("aria-current", "step");
     const mark = document.createElement("span");
     mark.className = "stage-dot";
     mark.setAttribute("aria-hidden", "true");
-    mark.textContent = done ? "●" : i === idx ? "◈" : "○";
+    mark.textContent = done ? "●" : active ? "◈" : "○";
     const label = document.createElement("span");
     label.className = "stage-label";
     label.textContent = name;
-    dot.append(mark, label);
+    // colour and glyph alone must never carry state
+    const word = document.createElement("span");
+    word.className = "sr-only";
+    word.textContent = done ? " done" : active ? " running" : " pending";
+    dot.append(mark, label, word);
     return dot;
   });
   const counter = document.createElement("span");
@@ -760,19 +776,23 @@ async function copyPath(path, button) {
 }
 
 function renderOutputPath(job) {
-  if (!job.output_dir || job.status !== "done") {
+  const path = job.status === "done" ? job.output_dir ?? null : null;
+  const shown = outputPathDiv.querySelector("code")?.textContent ?? null;
+  // rebuilding an unchanged panel would detach a focused #copy-path on every poll
+  if (path === shown) return;
+  if (path === null) {
     outputPathDiv.replaceChildren();
     return;
   }
   const wrap = document.createElement("div");
   wrap.className = "output-path";
   const code = document.createElement("code");
-  code.textContent = job.output_dir;
+  code.textContent = path;
   const button = document.createElement("button");
   button.id = "copy-path";
   button.type = "button";
   button.textContent = "copy";
-  button.addEventListener("click", () => copyPath(job.output_dir, button));
+  button.addEventListener("click", () => copyPath(path, button));
   wrap.append(code, button);
   outputPathDiv.replaceChildren(wrap);
 }

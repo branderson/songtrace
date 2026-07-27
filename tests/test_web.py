@@ -1,7 +1,9 @@
 import io
+import re
 import threading
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from karaoke_maker.config import Config
@@ -351,19 +353,133 @@ def test_index_has_dragdrop_and_poll_control():
     assert "clearInterval" in html or "pollTimer" in html
 
 
-def test_index_patches_the_queue_in_place():
-    """Wholesale re-rendering detaches the focused card, blurring it every poll."""
+def _fn_body(html, name):
+    """The source of a top-level `function name(...) {...}` in the page script."""
+    start = html.index(f"function {name}(")
+    return html[start:html.index("\n}\n", start)]
+
+
+def _page_css(html):
+    return html[html.index("<style>"):html.index("</style>")]
+
+
+def _focus_flaws(html):
+    """Ways the 3s poll could detach — and so blur — a focused node.
+
+    Both the queue cards and #copy-path are focusable and both are rewritten on
+    every poll, so each one has to be patched in place rather than rebuilt.
+    """
+    flaws = []
+
+    queue = _fn_body(html, "renderJobs")
+    if 'querySelectorAll(".job")' not in queue or "dataset.id" not in queue:
+        flaws.append("queue cards are not matched to the payload by id")
+    if re.search(r"replaceChildren\(\s*\.\.\.", queue):
+        flaws.append("the queue is re-rendered wholesale, detaching every card")
+    for line in re.findall(r".*insertBefore.*", queue):
+        if not re.search(r"if \((\w+)\.children\[(\w+)\] !== (\w+)\) "
+                         r"\1\.insertBefore\(\s*\3\s*,\s*\1\.children\[\2\]", line):
+            flaws.append(f"a card is moved without checking it needs to be: {line.strip()}")
+
+    out = _fn_body(html, "renderOutputPath")
+    guard = re.search(r"if \((\w+) === (\w+)\) return;", out[:out.index("replaceChildren")])
+    if guard is None:
+        flaws.append("#copy-path is rebuilt without first checking whether it changed")
+    elif not re.search(rf"(?:{guard[1]}|{guard[2]}) = outputPathDiv\.querySelector",
+                       out[:guard.start()]):
+        flaws.append("the #copy-path guard does not compare against what is rendered")
+    return flaws
+
+
+def test_polling_cannot_blur_a_focused_control():
+    assert _focus_flaws(_index_html()) == []
+
+
+def _now_bar_flaws(html):
+    body = _fn_body(html, "renderNowBar")
+    picked = re.search(r'const (\w+) = jobs\.find\(\w+ => \w+\.status === "running"\)', body)
+    if picked is None:
+        return ["the bar does not pick out the running job"]
+    job, flaws = picked[1], []
+    if not re.search(rf'classList\.toggle\("idle", !{job}\)', body):
+        flaws.append("the idle class does not track whether a job is running")
+    if f"renderStageTrack({job})" not in body:
+        flaws.append("the stage track is not driven by the running job")
+    if f"{job} ?" not in body:
+        flaws.append("the now-bar title is not driven by the running job")
+    return flaws
+
+
+def test_now_bar_state_follows_the_running_job():
+    assert _now_bar_flaws(_index_html()) == []
+
+
+def _pulse_flaws(html):
+    css, flaws = _page_css(html), []
+    if "@keyframes stage-pulse" not in css:
+        flaws.append("the stage-pulse keyframes are missing")
+    applied = re.search(r"([^{}]*)\{[^{}]*animation: stage-pulse[^{}]*\}", css)
+    if applied is None:
+        flaws.append("stage-pulse is defined but never applied")
+    else:
+        selector = applied[1].strip().splitlines()[-1].strip()
+        if ".stage-active" not in selector or ".stage-dot" not in selector:
+            flaws.append(f"the pulse is on {selector!r}, not the running stage's dot")
+        if '"stage-active"' not in _fn_body(html, "renderStageTrack"):
+            flaws.append("nothing ever gets the stage-active class")
+    reduced = re.search(r"@media \(prefers-reduced-motion: reduce\) \{(.*?)\n\}", css, re.S)
+    if reduced is None or not re.search(r"\*[^{}]*\{[^{}]*animation: none !important",
+                                        reduced[1]):
+        flaws.append("reduced motion does not disable animation everywhere")
+    return flaws
+
+
+def test_running_stage_pulses_unless_motion_is_reduced():
+    assert _pulse_flaws(_index_html()) == []
+
+
+# each mutation is a plausible regression; the checker above must reject all of them
+MUTATIONS = [
+    (_focus_flaws, "queue: card moved unconditionally",
+     "if (jobsDiv.children[i] !== card) jobsDiv.insertBefore",
+     "jobsDiv.insertBefore"),
+    (_focus_flaws, "queue: rebuilt wholesale",
+     "jobsDiv.insertBefore(card, jobsDiv.children[i] ?? null)",
+     "jobsDiv.replaceChildren(...jobs.map(jobCard))"),
+    (_focus_flaws, "copy-path: unchanged panel rebuilt anyway",
+     "if (path === shown) return;", ""),
+    (_now_bar_flaws, "now bar: idle keyed off the queue instead of the running job",
+     'classList.toggle("idle", !running)', 'classList.toggle("idle", !jobs.length)'),
+    (_now_bar_flaws, "now bar: shows the newest job instead of the running one",
+     'const running = jobs.find(j => j.status === "running")',
+     "const running = jobs[0]"),
+    (_pulse_flaws, "pulse: attached to the wrong stage",
+     ".stage-active .stage-dot { color: var(--aqua); animation: stage-pulse",
+     ".stage-pending .stage-dot { color: var(--aqua); animation: stage-pulse"),
+    (_pulse_flaws, "pulse: reduced motion no longer wins",
+     "animation: none !important", "animation: none"),
+]
+
+
+@pytest.mark.parametrize("check,name,old,new",
+                         MUTATIONS, ids=[m[1] for m in MUTATIONS])
+def test_guards_reject_plausible_regressions(check, name, old, new):
     html = _index_html()
-    assert "jobsDiv.replaceChildren(...jobs.map" not in html
-    assert "insertBefore" in html
+    assert old in html, f"mutation no longer applies, rewrite it: {name}"
+    assert check(html.replace(old, new)), f"{name} slipped past the check"
 
 
-def test_index_tracks_the_now_bar_idle_state():
+def test_stage_state_is_not_conveyed_by_colour_alone():
     html = _index_html()
-    assert 'classList.toggle("idle"' in html
+    body = _fn_body(html, "renderStageTrack")
+    assert 'setAttribute("aria-current", "step")' in body
+    assert '"sr-only"' in body and ".sr-only {" in _page_css(html)
+    for word in ('" done"', '" running"', '" pending"'):
+        assert word in body, word
 
 
-def test_index_pulses_the_running_stage():
-    html = _index_html()
-    assert "@keyframes stage-pulse" in html
-    assert "animation: stage-pulse" in html
+def test_narrow_stage_labels_stay_in_the_accessibility_tree():
+    hidden = re.search(r"\.stage:not\(\.stage-active\) \.stage-label \{([^}]*)\}",
+                       _page_css(_index_html()))
+    assert hidden, "the compact stage track rule moved or was renamed"
+    assert "display: none" not in hidden[1] and "visibility: hidden" not in hidden[1]
