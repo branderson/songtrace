@@ -343,7 +343,7 @@ button { cursor: pointer; }
   border: 1px solid var(--border);
 }
 .output-path code { flex: 1; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 0.82rem; }
-#copy-path {
+#copy-path, .action, #cancel-rebuild {
   flex: none;
   padding: 5px 12px;
   font-family: var(--font-display);
@@ -356,7 +356,23 @@ button { cursor: pointer; }
   border: 1px solid var(--control);
   border-radius: 2px;
 }
-#copy-path:hover { border-color: var(--text-muted); }
+#copy-path:hover, .action:hover, #cancel-rebuild:hover { border-color: var(--text-muted); }
+
+.form-actions { display: flex; align-items: center; gap: 14px; }
+.keep-note { margin: -8px 0 0; font-size: 0.78rem; color: var(--aqua); }
+#review-actions { display: flex; gap: 10px; margin-top: 14px; }
+#review-lineage { margin: -10px 0 14px; }
+.lineage {
+  padding: 0;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--aqua);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid transparent;
+}
+.lineage:hover { border-bottom-color: var(--aqua); }
+.job-mark { grid-area: 1 / 2; justify-self: end; font-size: 0.8rem; color: var(--text-muted); }
 
 #detail {
   margin: 13px 0 0;
@@ -480,6 +496,7 @@ button { cursor: pointer; }
         <div class="stack">
           <label class="field"><span>YouTube URL</span><input name="youtube_url"></label>
           <label class="field"><span>Video file</span><input type="file" name="video"></label>
+          <p class="keep-note" data-keep="video" hidden></p>
           <div class="pair">
             <label class="field"><span>Genre</span><input name="genre"></label>
             <label class="field"><span>Year</span><input name="year" type="number"></label>
@@ -489,9 +506,13 @@ button { cursor: pointer; }
             <label class="field"><span>BPM override</span><input name="bpm" type="number" step="any"></label>
           </div>
           <label class="field"><span>Cover image</span><input type="file" name="cover"></label>
+          <p class="keep-note" data-keep="cover" hidden></p>
         </div>
       </details>
-      <button type="submit" class="primary">CREATE SONG</button>
+      <div class="form-actions">
+        <button type="submit" class="primary">CREATE SONG</button>
+        <button type="button" id="cancel-rebuild" hidden>CANCEL</button>
+      </div>
     </form>
     <p id="form-error" role="alert"></p>
   </section>
@@ -499,9 +520,11 @@ button { cursor: pointer; }
   <section id="review">
     <h2>REVIEW</h2>
     <h3 id="review-title"></h3>
+    <p id="review-lineage" hidden></p>
     <p id="review-error" class="review-error" hidden></p>
     <div id="warnings"><p class="empty-note">no songs queued yet — nothing to review</p></div>
     <div id="output-path"></div>
+    <div id="review-actions"></div>
     <details>
       <summary>Log</summary>
       <pre id="detail">no songs queued yet — nothing to log</pre>
@@ -527,6 +550,13 @@ const nowBar = document.getElementById("now-bar");
 const nowLabel = document.getElementById("now-label");
 const nowTitle = document.getElementById("now-title");
 const stageTrack = document.getElementById("stage-track");
+const reviewActions = document.getElementById("review-actions");
+const reviewLineage = document.getElementById("review-lineage");
+const cancelRebuild = document.getElementById("cancel-rebuild");
+const formHeading = document.querySelector("#new-song h2");
+const submitButton = form.querySelector("button[type=submit]");
+let rebuildOf = null;
+let JOBS = [];
 let selectedId = null;
 let STAGES = [];
 let pollTimer = null;
@@ -557,13 +587,15 @@ form.addEventListener("submit", async (e) => {
     if (isFile && value.size === 0) data.delete(name);
     else if (!isFile && value === "") data.delete(name);
   }
-  const resp = await fetch("/api/jobs", { method: "POST", body: data });
+  const url = rebuildOf ? `/api/jobs/${rebuildOf}/rebuild` : "/api/jobs";
+  const resp = await fetch(url, { method: "POST", body: data });
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
     formError.textContent = body.detail || `error: ${resp.status}`;
     return;  // before the reset below, so a rejected submission is never retyped
   }
-  form.reset();
+  selectedId = (await resp.json()).id;
+  exitRebuild();
   refreshJobs();
 });
 
@@ -588,6 +620,8 @@ for (const input of form.querySelectorAll('input[type="file"]')) {
   });
 }
 
+cancelRebuild.addEventListener("click", exitRebuild);
+
 function jobCard(job) {
   const card = document.createElement("button");
   card.type = "button";
@@ -610,7 +644,15 @@ function jobCard(job) {
   const time = document.createElement("span");
   time.className = "job-elapsed";
 
-  card.append(title, artist, stateLine, time);
+  const mark = document.createElement("span");
+  mark.className = "job-mark";
+  const markGlyph = document.createElement("span");
+  markGlyph.setAttribute("aria-hidden", "true");
+  const markLabel = document.createElement("span");
+  markLabel.className = "sr-only";
+  mark.append(markGlyph, markLabel);
+
+  card.append(title, artist, stateLine, time, mark);
   card.addEventListener("click", () => selectJob(job.id));
   paintCard(card, job);
   return card;
@@ -618,7 +660,7 @@ function jobCard(job) {
 
 function paintCard(card, job) {
   const state = STATE[job.status] ?? { glyph: "·", cls: "st-queued" };
-  const [title, artist, stateLine, time] = card.children;
+  const [title, artist, stateLine, time, mark] = card.children;
   card.className = `job ${state.cls}`;
   if (job.id === selectedId) card.setAttribute("aria-current", "true");
   else card.removeAttribute("aria-current");
@@ -627,6 +669,8 @@ function paintCard(card, job) {
   stateLine.children[0].textContent = state.glyph;
   stateLine.children[1].textContent = job.stage ? `${job.status} · ${job.stage}` : job.status;
   time.textContent = elapsed(job);
+  mark.children[0].textContent = job.rebuilt_from ? "↻" : "";
+  mark.children[1].textContent = job.rebuilt_from ? " rebuilt" : "";
 }
 
 // patched in place rather than replaced wholesale: detaching a card would blur
@@ -709,6 +753,7 @@ function schedulePoll(jobs) {
 async function refreshJobs() {
   const resp = await fetch("/api/jobs");
   const jobs = await resp.json();
+  JOBS = jobs;
   if (selectedId === null && jobs.length) selectedId = jobs[0].id;
   renderJobs(jobs);
   renderNowBar(jobs);
@@ -829,6 +874,90 @@ function renderOutputPath(job) {
   outputPathDiv.replaceChildren(wrap);
 }
 
+function setFormMode(inp) {
+  formHeading.textContent = rebuildOf ? "REBUILD" : "NEW SONG";
+  submitButton.textContent = rebuildOf ? "REBUILD SONG" : "CREATE SONG";
+  cancelRebuild.hidden = !rebuildOf;
+  for (const [field, key] of [["video", "video_filename"], ["cover", "cover_filename"]]) {
+    const note = form.querySelector(`[data-keep="${field}"]`);
+    const kept = rebuildOf && inp ? inp[key] : null;
+    note.textContent = kept ? `keeping ${kept} — attach a file to replace it` : "";
+    note.hidden = !kept;
+  }
+}
+
+function exitRebuild() {
+  rebuildOf = null;
+  form.reset();
+  setFormMode(null);
+}
+
+async function startRebuild(id) {
+  const resp = await fetch(`/api/jobs/${id}/input`);
+  if (!resp.ok) return;
+  const inp = await resp.json();
+  form.reset();
+  for (const [name, value] of Object.entries(inp)) {
+    // the payload is keyed by form field name; *_filename match nothing, by design
+    const el = form.elements[name];
+    if (el && value !== null) el.value = value;
+  }
+  rebuildOf = id;
+  setFormMode(inp);
+  formError.textContent = "";
+  form.elements.title.focus();
+}
+
+async function rerunJob(id) {
+  formError.textContent = "";
+  const resp = await fetch(`/api/jobs/${id}/rerun`, { method: "POST" });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    formError.textContent = body.detail || `error: ${resp.status}`;
+    return;
+  }
+  selectedId = (await resp.json()).id;
+  refreshJobs();
+}
+
+function actionButton(action, jobId) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "action";
+  button.dataset.action = action;
+  button.textContent = action === "rerun" ? "RERUN" : "EDIT & REBUILD";
+  button.addEventListener("click",
+    () => action === "rerun" ? rerunJob(jobId) : startRebuild(jobId));
+  return button;
+}
+
+function renderActions(job) {
+  // no controls mid-run: both endpoints answer 409 until the job settles
+  const wanted = job.status === "failed" ? ["rerun", "edit"]
+               : job.status === "done" ? ["edit"] : [];
+  const shown = [...reviewActions.children].map(b => b.dataset.action);
+  // rebuilding an unchanged row would detach a focused action on every poll
+  if (reviewActions.dataset.jobId === job.id && shown.join() === wanted.join()) return;
+  reviewActions.dataset.jobId = job.id;
+  reviewActions.replaceChildren(...wanted.map(a => actionButton(a, job.id)));
+}
+
+function renderLineage(job) {
+  if (reviewLineage.dataset.jobId === job.id) return;
+  reviewLineage.dataset.jobId = job.id;
+  reviewLineage.replaceChildren();
+  reviewLineage.hidden = !job.rebuilt_from;
+  if (!job.rebuilt_from) return;
+  const parent = JOBS.find(j => j.id === job.rebuilt_from);
+  const link = document.createElement("button");
+  link.type = "button";
+  link.className = "lineage";
+  link.textContent = parent ? `rebuilt from ${parent.title}`
+                            : "rebuilt from an earlier run";
+  link.addEventListener("click", () => selectJob(job.rebuilt_from));
+  reviewLineage.append(link);
+}
+
 async function refreshDetail() {
   const id = selectedId;
   const resp = await fetch(`/api/jobs/${id}`);
@@ -842,6 +971,8 @@ async function refreshDetail() {
   reviewError.textContent = job.error ?? "";
   renderWarnings(job);
   renderOutputPath(job);
+  renderLineage(job);
+  renderActions(job);
   detail.textContent = job.log.join("\n");
 }
 
