@@ -182,3 +182,51 @@ def test_jobs_run_one_at_a_time(tmp_path):
     for job_id in ids:
         wait_status(client, job_id, "done")
     assert state["max"] == 1
+
+
+def test_job_has_timestamps(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+    job = wait_status(client, resp.json()["id"], "done")
+    assert job["created_at"] <= job["started_at"] <= job["finished_at"]
+
+
+def test_queued_job_has_no_start_or_finish(tmp_path):
+    gate = threading.Event()
+
+    def blocking_runner(inp, cfg, log=print, force_from=None, stages=None):
+        gate.wait(timeout=5)
+        return PipelineResult(output_dir=cfg.output_dir / "X", warnings=[])
+
+    client, _ = make_client(tmp_path, blocking_runner)
+    try:
+        first = client.post("/api/jobs", data={
+            "title": "T1", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+        second = client.post("/api/jobs", data={
+            "title": "T2", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+        queued = client.get(f"/api/jobs/{second.json()['id']}").json()
+        assert queued["created_at"] > 0
+        assert queued["started_at"] is None and queued["finished_at"] is None
+    finally:
+        gate.set()
+        wait_status(client, first.json()["id"], "done")
+
+
+def test_failed_job_still_records_finish(tmp_path):
+    def bad_runner(*a, **kw):
+        raise PipelineError("boom")
+    client, _ = make_client(tmp_path, bad_runner)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"})
+    job = wait_status(client, resp.json()["id"], "failed")
+    assert job["finished_at"] is not None and job["finished_at"] >= job["started_at"]
+
+
+def test_job_list_includes_timestamps(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+    wait_status(client, resp.json()["id"], "done")
+    summary = client.get("/api/jobs").json()[0]
+    assert {"created_at", "started_at", "finished_at"} <= set(summary)

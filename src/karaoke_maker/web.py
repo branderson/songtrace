@@ -3,6 +3,7 @@ import queue
 import re
 import shutil
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,9 @@ class Job:
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
     inp: SongInput | None = None
+    created_at: float = field(default_factory=time.time)
+    started_at: float | None = None
+    finished_at: float | None = None
 
 
 def _safe_filename(name: str | None, default: str) -> str:
@@ -55,6 +59,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             with lock:
                 job = jobs[job_id]
                 job.status = "running"
+                job.started_at = time.time()
 
             def log(msg: str, job=job):
                 with lock:
@@ -73,6 +78,8 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                     job.status = "failed"
                     job.error = str(e)
             finally:
+                with lock:
+                    job.finished_at = time.time()
                 # safe: acquire copies the upload into the per-song work dir
                 # and package reads cover_path directly, both inside runner()
                 # above, before this cleanup runs.
@@ -124,7 +131,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     def list_jobs():
         with lock:
             return [{"id": j.id, "title": j.title, "artist": j.artist,
-                      "status": j.status, "stage": j.stage}
+                      "status": j.status, "stage": j.stage,
+                      "created_at": j.created_at, "started_at": j.started_at,
+                      "finished_at": j.finished_at}
                      for j in (jobs[i] for i in reversed(order))]
 
     @app.get("/api/jobs/{job_id}")
@@ -136,7 +145,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             return {"id": job.id, "title": job.title, "artist": job.artist,
                     "status": job.status, "stage": job.stage,
                     "log": job.log[-100:], "output_dir": job.output_dir,
-                    "warnings": list(job.warnings), "error": job.error}
+                    "warnings": list(job.warnings), "error": job.error,
+                    "created_at": job.created_at, "started_at": job.started_at,
+                    "finished_at": job.finished_at}
 
     return app
 
