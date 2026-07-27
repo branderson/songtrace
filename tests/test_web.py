@@ -5,7 +5,7 @@ import time
 from fastapi.testclient import TestClient
 
 from karaoke_maker.config import Config
-from karaoke_maker.pipeline import PipelineError, PipelineResult
+from karaoke_maker.pipeline import STAGE_ORDER, PipelineError, PipelineResult
 from karaoke_maker.web import create_app
 
 
@@ -230,3 +230,46 @@ def test_job_list_includes_timestamps(tmp_path):
     wait_status(client, resp.json()["id"], "done")
     summary = client.get("/api/jobs").json()[0]
     assert {"created_at", "started_at", "finished_at"} <= set(summary)
+
+
+def test_stages_endpoint_matches_stage_order(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.get("/api/stages").json()["stages"] == STAGE_ORDER
+
+
+def test_cached_stage_line_advances_stage(tmp_path):
+    def cached_runner(inp, cfg, log=print, force_from=None, stages=None):
+        log("[acquire] cached, skipping")
+        log("[separate] cached, skipping")
+        log("[transcribe] running")
+        return PipelineResult(output_dir=cfg.output_dir / "X", warnings=[])
+    client, _ = make_client(tmp_path, cached_runner)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+    job = wait_status(client, resp.json()["id"], "done")
+    assert job["stage"] == "transcribe"
+
+
+def test_cached_only_run_reports_last_cached_stage(tmp_path):
+    def all_cached(inp, cfg, log=print, force_from=None, stages=None):
+        for name in ("acquire", "separate", "transcribe"):
+            log(f"[{name}] cached, skipping")
+        return PipelineResult(output_dir=cfg.output_dir / "X", warnings=[])
+    client, _ = make_client(tmp_path, all_cached)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+    job = wait_status(client, resp.json()["id"], "done")
+    assert job["stage"] == "transcribe"
+
+
+def test_unrelated_log_lines_do_not_change_stage(tmp_path):
+    def noisy(inp, cfg, log=print, force_from=None, stages=None):
+        log("[align] running")
+        log("some incidental output")
+        log("[not a stage line]")
+        return PipelineResult(output_dir=cfg.output_dir / "X", warnings=[])
+    client, _ = make_client(tmp_path, noisy)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+    job = wait_status(client, resp.json()["id"], "done")
+    assert job["stage"] == "align"

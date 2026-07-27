@@ -13,10 +13,10 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 from .config import Config
-from .pipeline import PipelineError, SongInput, run_pipeline
+from .pipeline import STAGE_ORDER, PipelineError, SongInput, run_pipeline
 
 STATIC = Path(__file__).parent / "static"
-STAGE_LINE = re.compile(r"^\[(\w+)\] running")
+STAGE_LINE = re.compile(r"^\[(\w+)\] (?:running|cached, skipping)")
 
 
 @dataclass
@@ -126,6 +126,10 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             order.append(job_id)
         todo.put(job_id)
         return {"id": job_id}
+
+    @app.get("/api/stages")
+    def list_stages():
+        return {"stages": list(STAGE_ORDER)}
 
     @app.get("/api/jobs")
     def list_jobs():
