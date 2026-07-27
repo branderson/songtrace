@@ -228,6 +228,11 @@ input[type="file"] {
   border: 1px dashed var(--control);
 }
 input[type="file"]:hover { border-color: var(--text-muted); }
+.field.dropping input[type="file"] {
+  color: var(--text);
+  background: var(--panel-raised);
+  border-color: var(--aqua);
+}
 input[type="file"]::file-selector-button {
   margin-right: 11px;
   padding: 6px 11px;
@@ -387,6 +392,32 @@ button { cursor: pointer; }
 #now-bar.idle #now-title { color: var(--text-muted); font-weight: 400; font-family: var(--font-body); font-size: 0.82rem; }
 #stage-track { display: flex; align-items: center; gap: 15px; margin-left: auto; }
 
+.stage { display: flex; align-items: baseline; gap: 6px; color: var(--text-muted); }
+.stage-dot { font-size: 0.72rem; }
+.stage-label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.stage-done { color: var(--done); }
+.stage-active { color: var(--aqua); }
+@keyframes stage-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+.stage-active .stage-dot { color: var(--aqua); animation: stage-pulse 1.6s ease-in-out infinite; }
+
+.stage-counter {
+  padding-left: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+@media (max-width: 1180px) {
+  #stage-track { gap: 11px; }
+  .stage:not(.stage-active) .stage-label { display: none; }
+}
+
 /* --- responsive --------------------------------------------------------- */
 
 @media (max-width: 900px) {
@@ -481,7 +512,12 @@ const detail = document.getElementById("detail");
 const reviewTitle = document.getElementById("review-title");
 const reviewError = document.getElementById("review-error");
 const outputPathDiv = document.getElementById("output-path");
+const nowBar = document.getElementById("now-bar");
+const nowTitle = document.getElementById("now-title");
+const stageTrack = document.getElementById("stage-track");
 let selectedId = null;
+let STAGES = [];
+let pollTimer = null;
 
 const WARN_RE = /^(\d+)\s+low-confidence notes?\s+near\s+(\d+:\d{2})–(\d+:\d{2})/;
 
@@ -513,62 +549,152 @@ form.addEventListener("submit", async (e) => {
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
     formError.textContent = body.detail || `error: ${resp.status}`;
-    return;
+    return;  // before the reset below, so a rejected submission is never retyped
   }
   form.reset();
   refreshJobs();
 });
 
+for (const input of form.querySelectorAll('input[type="file"]')) {
+  const zone = input.closest(".field");
+  zone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    zone.classList.add("dropping");
+  });
+  zone.addEventListener("dragleave", (e) => {
+    if (!zone.contains(e.relatedTarget)) zone.classList.remove("dropping");
+  });
+  zone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    zone.classList.remove("dropping");
+    const [file] = e.dataTransfer.files;
+    if (!file) return;
+    // a single-file input needs a one-item FileList, which only DataTransfer can build
+    const picked = new DataTransfer();
+    picked.items.add(file);
+    input.files = picked.files;
+  });
+}
+
 function jobCard(job) {
-  const state = STATE[job.status] ?? { glyph: "·", cls: "st-queued" };
   const card = document.createElement("button");
   card.type = "button";
-  card.className = `job ${state.cls}`;
   card.dataset.id = job.id;
-  if (job.id === selectedId) card.setAttribute("aria-current", "true");
 
   const title = document.createElement("span");
   title.className = "job-title";
-  title.textContent = job.title;
 
   const artist = document.createElement("span");
   artist.className = "job-artist";
-  artist.textContent = job.artist;
 
   const glyph = document.createElement("span");
   glyph.className = "job-glyph";
   glyph.setAttribute("aria-hidden", "true");
-  glyph.textContent = state.glyph;
   const status = document.createElement("span");
-  status.textContent = job.stage ? `${job.status} · ${job.stage}` : job.status;
   const stateLine = document.createElement("span");
   stateLine.className = "job-state";
   stateLine.append(glyph, status);
 
   const time = document.createElement("span");
   time.className = "job-elapsed";
-  time.textContent = elapsed(job);
 
   card.append(title, artist, stateLine, time);
   card.addEventListener("click", () => selectJob(job.id));
+  paintCard(card, job);
   return card;
 }
 
+function paintCard(card, job) {
+  const state = STATE[job.status] ?? { glyph: "·", cls: "st-queued" };
+  const [title, artist, stateLine, time] = card.children;
+  card.className = `job ${state.cls}`;
+  if (job.id === selectedId) card.setAttribute("aria-current", "true");
+  else card.removeAttribute("aria-current");
+  title.textContent = job.title;
+  artist.textContent = job.artist;
+  stateLine.children[0].textContent = state.glyph;
+  stateLine.children[1].textContent = job.stage ? `${job.status} · ${job.stage}` : job.status;
+  time.textContent = elapsed(job);
+}
+
+// patched in place rather than replaced wholesale: detaching a card would blur
+// it, so a keyboard user would lose the queue on every poll
 function renderJobs(jobs) {
   if (!jobs.length) {
-    const note = document.createElement("p");
-    note.className = "empty-note";
-    note.textContent = "No songs yet. Create one to get started.";
-    jobsDiv.replaceChildren(note);
+    jobsDiv.replaceChildren(emptyNote("No songs yet. Create one to get started."));
     return;
   }
-  jobsDiv.replaceChildren(...jobs.map(jobCard));
+  const existing = new Map(
+    [...jobsDiv.querySelectorAll(".job")].map(card => [card.dataset.id, card]));
+  jobs.forEach((job, i) => {
+    let card = existing.get(job.id);
+    if (card) { existing.delete(job.id); paintCard(card, job); }
+    else card = jobCard(job);
+    if (jobsDiv.children[i] !== card) jobsDiv.insertBefore(card, jobsDiv.children[i] ?? null);
+  });
+  for (const stale of existing.values()) stale.remove();
+  while (jobsDiv.children.length > jobs.length) jobsDiv.lastElementChild.remove();
+}
+
+async function loadStages() {
+  const resp = await fetch("/api/stages");
+  STAGES = (await resp.json()).stages;
+}
+
+function renderStageTrack(job) {
+  if (!STAGES.length || !job || job.status === "queued") {
+    stageTrack.replaceChildren();
+    return;
+  }
+  const idx = job.stage ? STAGES.indexOf(job.stage) : -1;
+  const dots = STAGES.map((name, i) => {
+    const done = job.status === "done" || i < idx;
+    const dot = document.createElement("span");
+    dot.className = "stage " + (done ? "stage-done" : i === idx ? "stage-active" : "stage-pending");
+    const mark = document.createElement("span");
+    mark.className = "stage-dot";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = done ? "●" : i === idx ? "◈" : "○";
+    const label = document.createElement("span");
+    label.className = "stage-label";
+    label.textContent = name;
+    dot.append(mark, label);
+    return dot;
+  });
+  const counter = document.createElement("span");
+  counter.className = "stage-counter";
+  // an unrecognised stage name gives idx === -1, which reads as 0 done
+  counter.textContent = job.status === "done"
+    ? `${STAGES.length}/${STAGES.length}`
+    : `${Math.max(0, idx + 1)}/${STAGES.length}`;
+  stageTrack.replaceChildren(...dots, counter);
+}
+
+function renderNowBar(jobs) {
+  const running = jobs.find(j => j.status === "running");
+  nowBar.classList.toggle("idle", !running);
+  nowTitle.textContent = running ? `${running.title} · ${running.artist}` : "nothing in progress";
+  renderStageTrack(running);
+}
+
+function schedulePoll(jobs) {
+  const busy = jobs.some(j => j.status === "queued" || j.status === "running");
+  if (busy && pollTimer === null) {
+    pollTimer = setInterval(refreshJobs, 3000);
+  } else if (!busy && pollTimer !== null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
 }
 
 async function refreshJobs() {
   const resp = await fetch("/api/jobs");
-  renderJobs(await resp.json());
+  const jobs = await resp.json();
+  if (selectedId === null && jobs.length) selectedId = jobs[0].id;
+  renderJobs(jobs);
+  renderNowBar(jobs);
   if (selectedId) refreshDetail();
+  schedulePoll(jobs);
 }
 
 async function selectJob(id) {
@@ -665,8 +791,7 @@ async function refreshDetail() {
   detail.textContent = job.log.join("\n");
 }
 
-setInterval(refreshJobs, 3000);
-refreshJobs();
+loadStages().catch(() => {}).then(refreshJobs);
 </script>
 </body>
 </html>

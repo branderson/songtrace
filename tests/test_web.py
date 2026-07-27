@@ -334,3 +334,36 @@ def test_index_parses_warnings_with_endash():
 
 def test_index_has_copy_path_control():
     assert "copy-path" in _index_html()
+
+
+def test_index_fetches_stage_order_from_api():
+    html = _index_html()
+    assert "/api/stages" in html, "stage list must come from the API, not be hardcoded"
+    # Only the distinctive stage names — "grid", "align", "notes" and "pitch" can
+    # legitimately appear in CSS properties or UI copy.
+    for name in ("acquire", "separate", "transcribe", "package"):
+        assert f'"{name}"' not in html, f"stage {name} appears hardcoded in the page"
+
+
+def test_index_has_dragdrop_and_poll_control():
+    html = _index_html()
+    assert "dragover" in html and "drop" in html
+    assert "clearInterval" in html or "pollTimer" in html
+
+
+def test_index_patches_the_queue_in_place():
+    """Wholesale re-rendering detaches the focused card, blurring it every poll."""
+    html = _index_html()
+    assert "jobsDiv.replaceChildren(...jobs.map" not in html
+    assert "insertBefore" in html
+
+
+def test_index_tracks_the_now_bar_idle_state():
+    html = _index_html()
+    assert 'classList.toggle("idle"' in html
+
+
+def test_index_pulses_the_running_stage():
+    html = _index_html()
+    assert "@keyframes stage-pulse" in html
+    assert "animation: stage-pulse" in html
