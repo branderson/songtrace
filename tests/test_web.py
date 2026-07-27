@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from karaoke_maker.config import Config
 from karaoke_maker.pipeline import STAGE_ORDER, PipelineError, PipelineResult, song_slug
-from karaoke_maker.web import create_app
+from karaoke_maker.web import STAGE_LINE, create_app
 
 
 def make_client(tmp_path, runner):
@@ -737,9 +737,11 @@ def test_rebuild_logs_what_changed_without_faking_a_stage(tmp_path):
     child = client.post(f"/api/jobs/{parent}/rebuild",
                         data=rebuild_form(year="1998")).json()["id"]
     job = wait_status(client, child, "done")
-    line = next(l for l in job["log"] if l.startswith("[rebuild]"))
+    rebuild_lines = [l for l in job["log"] if l.startswith("[rebuild]")]
+    assert len(rebuild_lines) == 1
+    line = rebuild_lines[0]
     assert "grid" in line and "year" in line
-    assert job["stage"] == "acquire"  # from ok_runner, not from the rebuild line
+    assert not STAGE_LINE.match(line)
 
 
 def test_rebuild_inherits_the_parents_source(tmp_path):
