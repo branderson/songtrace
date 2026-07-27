@@ -13,8 +13,10 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import rebuild as rebuild_policy
 from .config import Config
-from .pipeline import STAGE_ORDER, PipelineError, SongInput, run_pipeline
+from .pipeline import (STAGE_ORDER, PipelineError, SongInput, run_pipeline,
+                       song_slug)
 
 STATIC = Path(__file__).parent / "static"
 STAGE_LINE = re.compile(r"^\[(\w+)\] (?:running|cached, skipping)")
@@ -46,6 +48,21 @@ def _safe_filename(name: str | None, default: str) -> str:
 async def _save_upload(upload: UploadFile, dest: Path) -> None:
     with dest.open("wb") as f:
         await run_in_threadpool(shutil.copyfileobj, upload.file, f)
+
+
+async def _store_uploads(cfg: Config, job_id: str, video: UploadFile | None,
+                         cover: UploadFile | None) -> tuple[Path | None, Path | None]:
+    updir = cfg.work_dir / "uploads" / job_id
+    paths = []
+    for upload, default in ((video, "video"), (cover, "cover")):
+        if not (upload and upload.filename):
+            paths.append(None)
+            continue
+        updir.mkdir(parents=True, exist_ok=True)
+        dest = updir / _safe_filename(upload.filename, default)
+        await _save_upload(upload, dest)
+        paths.append(dest)
+    return paths[0], paths[1]
 
 
 def _cleanup_uploads(cfg: Config, job_id: str, video_path: Path | None) -> None:
@@ -82,6 +99,21 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     lock = threading.Lock()
     todo: queue.Queue[str] = queue.Queue()
 
+    def _prepare_rebuild(job: Job, log) -> str | None:
+        """Relocate cached work and report the stage this rebuild restarts from."""
+        if not job.rebuilt_from:
+            return None
+        with lock:
+            parent = jobs.get(job.rebuilt_from)
+        if parent is None:
+            return None
+        force_from = rebuild_policy.plan(parent.inp, job.inp)
+        changed = rebuild_policy.changed_fields(parent.inp, job.inp)
+        rebuild_policy.relocate_work(parent.inp, job.inp, cfg)
+        log(f"[rebuild] restarting from {force_from or 'the first incomplete stage'}"
+            f" ({', '.join(changed) if changed else 'nothing'} changed)")
+        return force_from
+
     def worker():
         while True:
             job_id = todo.get()
@@ -97,7 +129,8 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                         job.stage = m[1]
 
             try:
-                result = runner(job.inp, cfg, log=log)
+                force_from = _prepare_rebuild(job, log)
+                result = runner(job.inp, cfg, log=log, force_from=force_from)
                 with lock:
                     job.status = "done"
                     job.output_dir = str(result.output_dir)
@@ -152,16 +185,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             raise HTTPException(400, f"bpm must be a finite value > 0, got {bpm!r}")
 
         job_id = uuid.uuid4().hex
-        updir = cfg.work_dir / "uploads" / job_id
-        video_path = cover_path = None
-        if has_video:
-            updir.mkdir(parents=True, exist_ok=True)
-            video_path = updir / _safe_filename(video.filename, "video")
-            await _save_upload(video, video_path)
-        if cover and cover.filename:
-            updir.mkdir(parents=True, exist_ok=True)
-            cover_path = updir / _safe_filename(cover.filename, "cover")
-            await _save_upload(cover, cover_path)
+        video_path, cover_path = await _store_uploads(cfg, job_id, video, cover)
 
         inp = SongInput(title=title, artist=artist, lyrics_text=lyrics,
                          youtube_url=youtube_url, video_path=video_path,
@@ -173,6 +197,52 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     def rerun(job_id: str):
         parent = _finished_job(job_id)
         return _enqueue(uuid.uuid4().hex, parent.inp, rebuilt_from=job_id)
+
+    def _require_source(parent_inp: SongInput, inp: SongInput,
+                        force_from: str | None) -> None:
+        """Refuse a rebuild that will rerun acquire against an upload we no longer have."""
+        if inp.video_path is None or inp.video_path.exists():
+            return
+        if force_from != "acquire":
+            # acquire is cached under the old slug until the worker renames it
+            for slug in {song_slug(parent_inp), song_slug(inp)}:
+                work = cfg.work_dir / slug
+                if (work / "meta.json").exists() and (work / "audio.wav").exists():
+                    return
+        raise HTTPException(400, "the original video upload is no longer available; "
+                                 "attach the video file again")
+
+    @app.post("/api/jobs/{job_id}/rebuild", status_code=201)
+    async def rebuild(job_id: str, title: str = Form(...), artist: str = Form(...),
+                      lyrics: str = Form(...), youtube_url: str | None = Form(None),
+                      genre: str | None = Form(None), year: int | None = Form(None),
+                      language: str | None = Form(None), bpm: float | None = Form(None),
+                      video: UploadFile | None = File(None),
+                      cover: UploadFile | None = File(None)):
+        parent = _finished_job(job_id)
+        # a cleared field arrives as "" from some clients; "" and None must not
+        # look like different inputs to plan()
+        youtube_url, genre, language = (youtube_url or None, genre or None,
+                                        language or None)
+        has_video = bool(video and video.filename)
+        if youtube_url and has_video:
+            raise HTTPException(400, "provide exactly one of youtube_url / video")
+        if bpm is not None and (not math.isfinite(bpm) or bpm <= 0):
+            raise HTTPException(400, f"bpm must be a finite value > 0, got {bpm!r}")
+
+        new_id = uuid.uuid4().hex
+        video_path, cover_path = await _store_uploads(cfg, new_id, video, cover)
+        if not youtube_url and not has_video:
+            youtube_url, video_path = parent.inp.youtube_url, parent.inp.video_path
+        if cover_path is None:
+            cover_path = parent.inp.cover_path
+
+        inp = SongInput(title=title, artist=artist, lyrics_text=lyrics,
+                        youtube_url=youtube_url, video_path=video_path,
+                        genre=genre, year=year, language=language,
+                        cover_path=cover_path, bpm_override=bpm)
+        _require_source(parent.inp, inp, rebuild_policy.plan(parent.inp, inp))
+        return _enqueue(new_id, inp, rebuilt_from=job_id)
 
     @app.get("/api/stages")
     def list_stages():

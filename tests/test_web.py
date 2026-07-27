@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from karaoke_maker.config import Config
-from karaoke_maker.pipeline import STAGE_ORDER, PipelineError, PipelineResult
+from karaoke_maker.pipeline import STAGE_ORDER, PipelineError, PipelineResult, song_slug
 from karaoke_maker.web import create_app
 
 
@@ -669,3 +669,153 @@ def test_input_reports_bare_filenames_only(tmp_path):
 def test_input_of_an_unknown_job_is_404(tmp_path):
     client, _ = make_client(tmp_path, ok_runner)
     assert client.get("/api/jobs/nope/input").status_code == 404
+
+
+def capture_runner_factory(seen):
+    def capture(inp, cfg, log=print, force_from=None, stages=None):
+        seen.append({"inp": inp, "force_from": force_from})
+        return PipelineResult(output_dir=cfg.output_dir / song_slug(inp))
+    return capture
+
+
+def rebuild_form(**overrides):
+    """The form as the page posts it — empty fields are stripped, not sent blank."""
+    data = {"title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"}
+    data.update(overrides)
+    return {k: v for k, v in data.items() if v != ""}
+
+
+def test_rebuild_forces_the_stage_the_edit_invalidated(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, capture_runner_factory(seen))
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild",
+                        data=rebuild_form(lyrics="new words")).json()["id"]
+    wait_status(client, child, "done")
+    assert seen[1]["force_from"] == "align"
+    assert seen[1]["inp"].lyrics_text == "new words"
+
+
+def test_rebuild_with_no_edits_forces_nothing(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, capture_runner_factory(seen))
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild",
+                        data=rebuild_form()).json()["id"]
+    wait_status(client, child, "done")
+    assert seen[1]["force_from"] is None
+
+
+def test_rebuild_renames_the_work_dir_on_a_retitle(tmp_path):
+    seen = []
+    client, cfg = make_client(tmp_path, capture_runner_factory(seen))
+    parent = make_done_job(client)
+    (cfg.work_dir / "A - T").mkdir(parents=True)
+    (cfg.work_dir / "A - T" / "audio.wav").write_bytes(b"x")
+    child = client.post(f"/api/jobs/{parent}/rebuild",
+                        data=rebuild_form(title="T2")).json()["id"]
+    wait_status(client, child, "done")
+    assert not (cfg.work_dir / "A - T").exists()
+    assert (cfg.work_dir / "A - T2" / "audio.wav").exists()
+    assert seen[1]["force_from"] == "grid"
+
+
+def test_rebuild_fails_the_job_on_a_work_dir_collision(tmp_path):
+    client, cfg = make_client(tmp_path, ok_runner)
+    parent = make_done_job(client)
+    (cfg.work_dir / "A - T").mkdir(parents=True)
+    (cfg.work_dir / "A - T2").mkdir(parents=True)
+    child = client.post(f"/api/jobs/{parent}/rebuild",
+                        data=rebuild_form(title="T2")).json()["id"]
+    job = wait_status(client, child, "failed")
+    assert "already exists" in job["error"]
+
+
+def test_rebuild_logs_what_changed_without_faking_a_stage(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild",
+                        data=rebuild_form(year="1998")).json()["id"]
+    job = wait_status(client, child, "done")
+    line = next(l for l in job["log"] if l.startswith("[rebuild]"))
+    assert "grid" in line and "year" in line
+    assert job["stage"] == "acquire"  # from ok_runner, not from the rebuild line
+
+
+def test_rebuild_inherits_the_parents_source(tmp_path):
+    seen = []
+    client, cfg = make_client(tmp_path, capture_runner_factory(seen))
+    resp = client.post("/api/jobs", data={"title": "T", "artist": "A", "lyrics": "x"},
+                        files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4")})
+    parent = resp.json()["id"]
+    wait_status(client, parent, "done")
+    (cfg.work_dir / "A - T").mkdir(parents=True)
+    for name in ("meta.json", "audio.wav"):
+        (cfg.work_dir / "A - T" / name).write_bytes(b"x")
+    child = client.post(f"/api/jobs/{parent}/rebuild",
+                        data=rebuild_form(youtube_url="", year="1998")).json()["id"]
+    wait_status(client, child, "done")
+    assert seen[1]["inp"].video_path == seen[0]["inp"].video_path
+
+
+def test_rebuild_rejects_a_missing_upload_that_would_be_needed(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    resp = client.post("/api/jobs", data={"title": "T", "artist": "A", "lyrics": "x"},
+                        files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4")})
+    parent = resp.json()["id"]
+    wait_status(client, parent, "done")
+    resp = client.post(f"/api/jobs/{parent}/rebuild",
+                       data=rebuild_form(youtube_url="", language="de"))
+    assert resp.status_code == 400
+    assert "attach the video file again" in resp.json()["detail"]
+
+
+def test_rebuild_accepts_a_replacement_source(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, capture_runner_factory(seen))
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild", data=rebuild_form(youtube_url=""),
+                        files={"video": ("new.mp4", io.BytesIO(b"d"), "video/mp4")}
+                        ).json()["id"]
+    wait_status(client, child, "done")
+    assert seen[1]["inp"].youtube_url is None
+    assert seen[1]["inp"].video_path.name == "new.mp4"
+    assert seen[1]["force_from"] == "acquire"
+
+
+def test_rebuild_rejects_two_sources(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    parent = make_done_job(client)
+    resp = client.post(f"/api/jobs/{parent}/rebuild", data=rebuild_form(),
+                       files={"video": ("v.mp4", io.BytesIO(b"d"), "video/mp4")})
+    assert resp.status_code == 400
+
+
+def test_rebuild_rejects_a_bad_bpm(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    parent = make_done_job(client)
+    resp = client.post(f"/api/jobs/{parent}/rebuild", data=rebuild_form(bpm="0"))
+    assert resp.status_code == 400
+
+
+def test_rebuild_of_a_running_job_is_409(tmp_path):
+    release = threading.Event()
+
+    def blocking(inp, cfg, log=print, force_from=None, stages=None):
+        release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, blocking)
+    parent = client.post("/api/jobs", data=rebuild_form()).json()["id"]
+    try:
+        wait_status(client, parent, "running")
+        resp = client.post(f"/api/jobs/{parent}/rebuild", data=rebuild_form(year="1998"))
+        assert resp.status_code == 409
+    finally:
+        release.set()
+    wait_status(client, parent, "done")
+
+
+def test_rebuild_of_an_unknown_job_is_404(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.post("/api/jobs/nope/rebuild", data=rebuild_form()).status_code == 404
