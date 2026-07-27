@@ -545,3 +545,89 @@ def test_narrow_stage_labels_stay_in_the_accessibility_tree():
                        _page_css(_index_html()))
     assert hidden, "the compact stage track rule moved or was renamed"
     assert "display: none" not in hidden[1] and "visibility: hidden" not in hidden[1]
+
+
+def make_done_job(client, **overrides):
+    data = {"title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"}
+    data.update(overrides)
+    job_id = client.post("/api/jobs", data=data).json()["id"]
+    wait_status(client, job_id, "done")
+    return job_id
+
+
+def test_rerun_creates_a_linked_job(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    parent = make_done_job(client)
+    resp = client.post(f"/api/jobs/{parent}/rerun")
+    assert resp.status_code == 201
+    child = resp.json()["id"]
+    assert child != parent
+    job = wait_status(client, child, "done")
+    assert job["rebuilt_from"] == parent
+
+
+def test_rerun_copies_the_parents_input(tmp_path):
+    seen = []
+
+    def capture(inp, cfg, log=print, force_from=None, stages=None):
+        seen.append(inp)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, capture)
+    parent = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y",
+        "genre": "pop", "year": "1998", "language": "en", "bpm": "120"}).json()["id"]
+    wait_status(client, parent, "done")
+    child = client.post(f"/api/jobs/{parent}/rerun").json()["id"]
+    wait_status(client, child, "done")
+    assert seen[0] == seen[1]
+
+
+def test_rerun_of_a_failed_job_is_allowed(tmp_path):
+    calls = []
+
+    def flaky(inp, cfg, log=print, force_from=None, stages=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise PipelineError("transient")
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, flaky)
+    parent = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x",
+        "youtube_url": "http://y"}).json()["id"]
+    wait_status(client, parent, "failed")
+    child = client.post(f"/api/jobs/{parent}/rerun").json()["id"]
+    wait_status(client, child, "done")
+
+
+def test_rerun_of_an_unknown_job_is_404(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.post("/api/jobs/nope/rerun").status_code == 404
+
+
+def test_rerun_of_a_running_job_is_409(tmp_path):
+    release = threading.Event()
+
+    def blocking(inp, cfg, log=print, force_from=None, stages=None):
+        release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, blocking)
+    parent = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x",
+        "youtube_url": "http://y"}).json()["id"]
+    try:
+        wait_status(client, parent, "running")
+        assert client.post(f"/api/jobs/{parent}/rerun").status_code == 409
+    finally:
+        release.set()
+    wait_status(client, parent, "done")
+
+
+def test_rebuilt_from_is_null_for_an_ordinary_job(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    job_id = make_done_job(client)
+    assert client.get(f"/api/jobs/{job_id}").json()["rebuilt_from"] is None
+    listed = {j["id"]: j for j in client.get("/api/jobs").json()}
+    assert listed[job_id]["rebuilt_from"] is None

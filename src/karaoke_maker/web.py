@@ -32,6 +32,7 @@ class Job:
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
     inp: SongInput | None = None
+    rebuilt_from: str | None = None
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -114,6 +115,25 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
     threading.Thread(target=worker, daemon=True).start()
 
+    def _enqueue(job_id: str, inp: SongInput,
+                 rebuilt_from: str | None = None) -> dict:
+        job = Job(id=job_id, title=inp.title, artist=inp.artist, inp=inp,
+                  rebuilt_from=rebuilt_from)
+        with lock:
+            jobs[job_id] = job
+            order.append(job_id)
+        todo.put(job_id)
+        return {"id": job_id}
+
+    def _finished_job(job_id: str) -> Job:
+        with lock:
+            job = jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404)
+            if job.status in ("queued", "running"):
+                raise HTTPException(409, "job is still in progress")
+            return job
+
     @app.get("/")
     def index():
         return FileResponse(STATIC / "index.html")
@@ -147,12 +167,12 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                          youtube_url=youtube_url, video_path=video_path,
                          genre=genre, year=year, language=language,
                          cover_path=cover_path, bpm_override=bpm)
-        job = Job(id=job_id, title=title, artist=artist, inp=inp)
-        with lock:
-            jobs[job_id] = job
-            order.append(job_id)
-        todo.put(job_id)
-        return {"id": job_id}
+        return _enqueue(job_id, inp)
+
+    @app.post("/api/jobs/{job_id}/rerun", status_code=201)
+    def rerun(job_id: str):
+        parent = _finished_job(job_id)
+        return _enqueue(uuid.uuid4().hex, parent.inp, rebuilt_from=job_id)
 
     @app.get("/api/stages")
     def list_stages():
@@ -164,7 +184,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             return [{"id": j.id, "title": j.title, "artist": j.artist,
                       "status": j.status, "stage": j.stage,
                       "created_at": j.created_at, "started_at": j.started_at,
-                      "finished_at": j.finished_at}
+                      "finished_at": j.finished_at, "rebuilt_from": j.rebuilt_from}
                      for j in (jobs[i] for i in reversed(order))]
 
     @app.get("/api/jobs/{job_id}")
@@ -178,7 +198,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                     "log": job.log[-100:], "output_dir": job.output_dir,
                     "warnings": list(job.warnings), "error": job.error,
                     "created_at": job.created_at, "started_at": job.started_at,
-                    "finished_at": job.finished_at}
+                    "finished_at": job.finished_at, "rebuilt_from": job.rebuilt_from}
 
     return app
 
