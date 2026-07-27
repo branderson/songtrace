@@ -1,6 +1,8 @@
 whisper_url = "http://whisper.intranet:9000/v1"
 # whisper_api_key = ""
 # whisper_model = "whisper-1"
+# whisper_api = "openai"  # or "asr-webservice" for onerahmet/openai-whisper-asr-webservice
+                          # (set whisper_url without the /v1 suffix, e.g. "http://whisper.intranet:9000")
 output_dir = "/data/output"
 work_dir = "/data/work"
 creator = "brad"

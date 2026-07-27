@@ -9,6 +9,7 @@ class Config:
     whisper_url: str
     whisper_api_key: str | None = None
     whisper_model: str = "whisper-1"
+    whisper_api: str = "openai"
     output_dir: Path = Path("output")
     work_dir: Path = Path("work")
     creator: str = "karaoke-maker"

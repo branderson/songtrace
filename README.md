@@ -9,9 +9,10 @@ The pipeline:
 
 1. **acquire** — download audio/video via `yt-dlp` (or use a local video file)
 2. **separate** — split vocals/instrumental with Demucs
-3. **transcribe** — send the vocal stem to your own intranet OpenAI-compatible
-   Whisper server, as a sanity check that the supplied lyrics match the audio
-   and to locate vocal sections
+3. **transcribe** — send the vocal stem to your own intranet Whisper server
+   (OpenAI-compatible, or [onerahmet/openai-whisper-asr-webservice](https://github.com/ahmetoner/whisper-asr-webservice)),
+   as a sanity check that the supplied lyrics match the audio and to locate
+   vocal sections
 4. **align** — forced-align the *supplied* reference lyrics against the vocal
    stem with wav2vec2 (torchaudio's MMS_FA) to get word timings
 5. **pitch** — track pitch on the vocal stem with torchcrepe
@@ -45,8 +46,15 @@ $EDITOR config.toml   # set whisper_url at minimum
 ```
 
 See `config.example.toml` for every available field (`whisper_url`,
-`whisper_api_key`, `whisper_model`, `output_dir`, `work_dir`, `creator`,
-`demucs_model`, `crepe_model`, `device`, `bind_host`, `port`).
+`whisper_api_key`, `whisper_model`, `whisper_api`, `output_dir`, `work_dir`,
+`creator`, `demucs_model`, `crepe_model`, `device`, `bind_host`, `port`).
+
+`whisper_api` selects the wire format: `"openai"` (default) speaks the
+OpenAI-compatible `POST {whisper_url}/audio/transcriptions` API; `"asr-webservice"`
+speaks [onerahmet/openai-whisper-asr-webservice](https://github.com/ahmetoner/whisper-asr-webservice)'s
+`POST {whisper_url}/asr` API instead (point `whisper_url` at that server's base
+URL with no `/v1` suffix — `whisper_model`/`whisper_api_key` are unused for
+this backend, since the model is fixed by how that server was started).
 
 ## Docker
 
