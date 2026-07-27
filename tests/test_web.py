@@ -1,11 +1,13 @@
 import io
+import re
 import threading
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from karaoke_maker.config import Config
-from karaoke_maker.pipeline import PipelineError, PipelineResult
+from karaoke_maker.pipeline import STAGE_ORDER, PipelineError, PipelineResult
 from karaoke_maker.web import create_app
 
 
@@ -182,3 +184,319 @@ def test_jobs_run_one_at_a_time(tmp_path):
     for job_id in ids:
         wait_status(client, job_id, "done")
     assert state["max"] == 1
+
+
+def test_job_has_timestamps(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+    job = wait_status(client, resp.json()["id"], "done")
+    assert job["created_at"] <= job["started_at"] <= job["finished_at"]
+
+
+def test_queued_job_has_no_start_or_finish(tmp_path):
+    gate = threading.Event()
+
+    def blocking_runner(inp, cfg, log=print, force_from=None, stages=None):
+        gate.wait(timeout=5)
+        return PipelineResult(output_dir=cfg.output_dir / "X", warnings=[])
+
+    client, _ = make_client(tmp_path, blocking_runner)
+    try:
+        first = client.post("/api/jobs", data={
+            "title": "T1", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+        second = client.post("/api/jobs", data={
+            "title": "T2", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+        queued = client.get(f"/api/jobs/{second.json()['id']}").json()
+        assert queued["created_at"] > 0
+        assert queued["started_at"] is None and queued["finished_at"] is None
+    finally:
+        gate.set()
+        wait_status(client, first.json()["id"], "done")
+
+
+def test_failed_job_still_records_finish(tmp_path):
+    def bad_runner(*a, **kw):
+        raise PipelineError("boom")
+    client, _ = make_client(tmp_path, bad_runner)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"})
+    job = wait_status(client, resp.json()["id"], "failed")
+    assert job["finished_at"] is not None and job["finished_at"] >= job["started_at"]
+
+
+def test_job_list_includes_timestamps(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+    wait_status(client, resp.json()["id"], "done")
+    summary = client.get("/api/jobs").json()[0]
+    assert {"created_at", "started_at", "finished_at"} <= set(summary)
+
+
+def test_stages_endpoint_matches_stage_order(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.get("/api/stages").json()["stages"] == STAGE_ORDER
+
+
+def test_cached_stage_line_advances_stage(tmp_path):
+    def cached_runner(inp, cfg, log=print, force_from=None, stages=None):
+        log("[acquire] cached, skipping")
+        log("[separate] cached, skipping")
+        log("[transcribe] running")
+        return PipelineResult(output_dir=cfg.output_dir / "X", warnings=[])
+    client, _ = make_client(tmp_path, cached_runner)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+    job = wait_status(client, resp.json()["id"], "done")
+    assert job["stage"] == "transcribe"
+
+
+def test_cached_only_run_reports_last_cached_stage(tmp_path):
+    def all_cached(inp, cfg, log=print, force_from=None, stages=None):
+        for name in ("acquire", "separate", "transcribe"):
+            log(f"[{name}] cached, skipping")
+        return PipelineResult(output_dir=cfg.output_dir / "X", warnings=[])
+    client, _ = make_client(tmp_path, all_cached)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+    job = wait_status(client, resp.json()["id"], "done")
+    assert job["stage"] == "transcribe"
+
+
+def test_unrelated_log_lines_do_not_change_stage(tmp_path):
+    def noisy(inp, cfg, log=print, force_from=None, stages=None):
+        log("[align] running")
+        log("some incidental output")
+        log("[not a stage line]")
+        return PipelineResult(output_dir=cfg.output_dir / "X", warnings=[])
+    client, _ = make_client(tmp_path, noisy)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
+    job = wait_status(client, resp.json()["id"], "done")
+    assert job["stage"] == "align"
+
+
+def test_fonts_are_served(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    resp = client.get("/static/fonts/chakra-petch-600.woff2")
+    assert resp.status_code == 200
+    assert resp.content[:4] == b"wOF2"
+
+
+def test_font_licence_is_bundled():
+    from karaoke_maker.web import STATIC
+    licence = (STATIC / "fonts" / "OFL.txt").read_text(encoding="utf-8", errors="replace")
+    assert "SIL OPEN FONT LICENSE" in licence.upper()
+
+
+def _index_html():
+    from karaoke_maker.web import STATIC
+    return (STATIC / "index.html").read_text(encoding="utf-8")
+
+
+def test_index_has_required_hooks():
+    html = _index_html()
+    for hook in ("song-form", "jobs", "detail", "review", "now-bar", "sidebar"):
+        assert f'id="{hook}"' in html, hook
+    for name in ("title", "artist", "lyrics", "youtube_url", "video",
+                 "genre", "year", "language", "bpm", "cover"):
+        assert f'name="{name}"' in html, name
+
+
+def test_index_makes_no_external_requests():
+    import re as _re
+    html = _index_html()
+    for url in _re.findall(r'(?:src|href)\s*=\s*["\']([^"\']+)', html):
+        assert not url.startswith(("http://", "https://", "//")), url
+    assert "@import" not in html
+
+
+def test_index_renders_api_data_without_innerhtml():
+    """API-derived values must go through textContent, never innerHTML."""
+    import re as _re
+    html = _index_html()
+    for m in _re.finditer(r"\.(innerHTML|outerHTML|insertAdjacentHTML)\s*(=|\()\s*(.*)", html):
+        assert "${" not in m.group(3), f"interpolation into {m.group(1)}: {m.group(3)[:80]}"
+    # the page reaches the same end by never naming a markup-parsing sink at all,
+    # which also catches `el.innerHTML = job.title` (no interpolation to spot)
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML"):
+        assert sink not in html, f"{sink} must not appear in the page"
+
+
+def test_index_respects_reduced_motion():
+    assert "prefers-reduced-motion" in _index_html()
+
+
+def test_index_parses_warnings_with_endash():
+    html = _index_html()
+    assert "–" in html, "warning parser must handle the en-dash separator"
+    assert "data-start" in html and "data-end" in html
+
+
+def test_index_has_copy_path_control():
+    assert "copy-path" in _index_html()
+
+
+def test_index_fetches_stage_order_from_api():
+    html = _index_html()
+    assert "/api/stages" in html, "stage list must come from the API, not be hardcoded"
+    # Only the distinctive stage names — "grid", "align", "notes" and "pitch" can
+    # legitimately appear in CSS properties or UI copy.
+    for name in ("acquire", "separate", "transcribe", "package"):
+        assert f'"{name}"' not in html, f"stage {name} appears hardcoded in the page"
+
+
+def test_index_has_dragdrop_and_poll_control():
+    html = _index_html()
+    assert "dragover" in html and "drop" in html
+    assert "clearInterval" in html or "pollTimer" in html
+
+
+def _fn_body(html, name):
+    """The source of a top-level `function name(...) {...}` in the page script."""
+    start = html.index(f"function {name}(")
+    return html[start:html.index("\n}\n", start)]
+
+
+def _page_css(html):
+    return html[html.index("<style>"):html.index("</style>")]
+
+
+def _focus_flaws(html):
+    """Ways the 3s poll could detach — and so blur — a focused node.
+
+    Both the queue cards and #copy-path are focusable and both are rewritten on
+    every poll, so each one has to be patched in place rather than rebuilt.
+    """
+    flaws = []
+
+    queue = _fn_body(html, "renderJobs")
+    if 'querySelectorAll(".job")' not in queue or "dataset.id" not in queue:
+        flaws.append("queue cards are not matched to the payload by id")
+    if re.search(r"replaceChildren\(\s*\.\.\.", queue):
+        flaws.append("the queue is re-rendered wholesale, detaching every card")
+    for line in re.findall(r".*insertBefore.*", queue):
+        if not re.search(r"if \((\w+)\.children\[(\w+)\] !== (\w+)\) "
+                         r"\1\.insertBefore\(\s*\3\s*,\s*\1\.children\[\2\]", line):
+            flaws.append(f"a card is moved without checking it needs to be: {line.strip()}")
+
+    out = _fn_body(html, "renderOutputPath")
+    guard = re.search(r"if \((\w+) === (\w+)\) return;", out[:out.index("replaceChildren")])
+    if guard is None:
+        flaws.append("#copy-path is rebuilt without first checking whether it changed")
+    elif not re.search(rf"(?:{guard[1]}|{guard[2]}) = outputPathDiv\.querySelector",
+                       out[:guard.start()]):
+        flaws.append("the #copy-path guard does not compare against what is rendered")
+    return flaws
+
+
+def test_polling_cannot_blur_a_focused_control():
+    assert _focus_flaws(_index_html()) == []
+
+
+def _now_bar_flaws(html):
+    body = _fn_body(html, "renderNowBar")
+    picked = re.search(r'const (\w+) = jobs\.find\(\w+ => \w+\.status === "running"\)', body)
+    if picked is None:
+        return ["the bar does not pick out the running job"]
+    job, flaws = picked[1], []
+    if not re.search(rf'classList\.toggle\("idle", !{job}\)', body):
+        flaws.append("the idle class does not track whether a job is running")
+    if f"renderStageTrack({job})" not in body:
+        flaws.append("the stage track is not driven by the running job")
+    if f"{job} ?" not in body:
+        flaws.append("the now-bar title is not driven by the running job")
+    return flaws
+
+
+def test_now_bar_state_follows_the_running_job():
+    assert _now_bar_flaws(_index_html()) == []
+
+
+def _stale_detail_flaws(html):
+    """A slow response for a since-deselected job must not overwrite the UI."""
+    body = _fn_body(html, "refreshDetail")
+    m = re.search(r"const (\w+) = selectedId;", body)
+    if m is None:
+        return ["refreshDetail does not snapshot selectedId before fetching"]
+    if f"if ({m[1]} !== selectedId) return;" not in body:
+        return ["refreshDetail does not bail when selectedId changed during the fetch"]
+    return []
+
+
+def test_stale_detail_response_cannot_override_a_newer_selection():
+    assert _stale_detail_flaws(_index_html()) == []
+
+
+def _pulse_flaws(html):
+    css, flaws = _page_css(html), []
+    if "@keyframes stage-pulse" not in css:
+        flaws.append("the stage-pulse keyframes are missing")
+    applied = re.search(r"([^{}]*)\{[^{}]*animation: stage-pulse[^{}]*\}", css)
+    if applied is None:
+        flaws.append("stage-pulse is defined but never applied")
+    else:
+        selector = applied[1].strip().splitlines()[-1].strip()
+        if ".stage-active" not in selector or ".stage-dot" not in selector:
+            flaws.append(f"the pulse is on {selector!r}, not the running stage's dot")
+        if '"stage-active"' not in _fn_body(html, "renderStageTrack"):
+            flaws.append("nothing ever gets the stage-active class")
+    reduced = re.search(r"@media \(prefers-reduced-motion: reduce\) \{(.*?)\n\}", css, re.S)
+    if reduced is None or not re.search(r"\*[^{}]*\{[^{}]*animation: none !important",
+                                        reduced[1]):
+        flaws.append("reduced motion does not disable animation everywhere")
+    return flaws
+
+
+def test_running_stage_pulses_unless_motion_is_reduced():
+    assert _pulse_flaws(_index_html()) == []
+
+
+# each mutation is a plausible regression; the checker above must reject all of them
+MUTATIONS = [
+    (_focus_flaws, "queue: card moved unconditionally",
+     "if (jobsDiv.children[i] !== card) jobsDiv.insertBefore",
+     "jobsDiv.insertBefore"),
+    (_focus_flaws, "queue: rebuilt wholesale",
+     "jobsDiv.insertBefore(card, jobsDiv.children[i] ?? null)",
+     "jobsDiv.replaceChildren(...jobs.map(jobCard))"),
+    (_focus_flaws, "copy-path: unchanged panel rebuilt anyway",
+     "if (path === shown) return;", ""),
+    (_now_bar_flaws, "now bar: idle keyed off the queue instead of the running job",
+     'classList.toggle("idle", !running)', 'classList.toggle("idle", !jobs.length)'),
+    (_now_bar_flaws, "now bar: shows the newest job instead of the running one",
+     'const running = jobs.find(j => j.status === "running")',
+     "const running = jobs[0]"),
+    (_stale_detail_flaws, "refreshDetail: stale-response guard removed",
+     "if (id !== selectedId) return;", ""),
+    (_pulse_flaws, "pulse: attached to the wrong stage",
+     ".stage-active .stage-dot { color: var(--aqua); animation: stage-pulse",
+     ".stage-pending .stage-dot { color: var(--aqua); animation: stage-pulse"),
+    (_pulse_flaws, "pulse: reduced motion no longer wins",
+     "animation: none !important", "animation: none"),
+]
+
+
+@pytest.mark.parametrize("check,name,old,new",
+                         MUTATIONS, ids=[m[1] for m in MUTATIONS])
+def test_guards_reject_plausible_regressions(check, name, old, new):
+    html = _index_html()
+    assert old in html, f"mutation no longer applies, rewrite it: {name}"
+    assert check(html.replace(old, new)), f"{name} slipped past the check"
+
+
+def test_stage_state_is_not_conveyed_by_colour_alone():
+    html = _index_html()
+    body = _fn_body(html, "renderStageTrack")
+    assert 'setAttribute("aria-current", "step")' in body
+    assert '"sr-only"' in body and ".sr-only {" in _page_css(html)
+    for word in ('" done"', '" running"', '" pending"'):
+        assert word in body, word
+
+
+def test_narrow_stage_labels_stay_in_the_accessibility_tree():
+    hidden = re.search(r"\.stage:not\(\.stage-active\) \.stage-label \{([^}]*)\}",
+                       _page_css(_index_html()))
+    assert hidden, "the compact stage track rule moved or was renamed"
+    assert "display: none" not in hidden[1] and "visibility: hidden" not in hidden[1]
