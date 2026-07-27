@@ -200,6 +200,21 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                     "created_at": job.created_at, "started_at": job.started_at,
                     "finished_at": job.finished_at, "rebuilt_from": job.rebuilt_from}
 
+    @app.get("/api/jobs/{job_id}/input")
+    def get_input(job_id: str):
+        with lock:
+            job = jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404)
+            inp = job.inp
+        # keys are the form's field names so the page can prefill by name;
+        # paths are reduced to filenames, which is all the browser can use.
+        return {"title": inp.title, "artist": inp.artist, "lyrics": inp.lyrics_text,
+                "youtube_url": inp.youtube_url, "genre": inp.genre, "year": inp.year,
+                "language": inp.language, "bpm": inp.bpm_override,
+                "video_filename": inp.video_path.name if inp.video_path else None,
+                "cover_filename": inp.cover_path.name if inp.cover_path else None}
+
     return app
 
 

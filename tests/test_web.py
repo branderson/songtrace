@@ -631,3 +631,41 @@ def test_rebuilt_from_is_null_for_an_ordinary_job(tmp_path):
     assert client.get(f"/api/jobs/{job_id}").json()["rebuilt_from"] is None
     listed = {j["id"]: j for j in client.get("/api/jobs").json()}
     assert listed[job_id]["rebuilt_from"] is None
+
+
+def test_input_echoes_the_submitted_form(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    job_id = make_done_job(client, genre="pop", year="1998", language="en", bpm="120")
+    body = client.get(f"/api/jobs/{job_id}/input").json()
+    assert body == {"title": "T", "artist": "A", "lyrics": "x",
+                    "youtube_url": "http://y", "genre": "pop", "year": 1998,
+                    "language": "en", "bpm": 120.0,
+                    "video_filename": None, "cover_filename": None}
+
+
+def test_input_keys_match_the_form_field_names(tmp_path):
+    """The page assigns straight into form.elements[name]; a rename breaks prefill."""
+    html = _index_html()
+    names = set(re.findall(r'name="([a-z_]+)"', html))
+    client, _ = make_client(tmp_path, ok_runner)
+    body = client.get(f"/api/jobs/{make_done_job(client)}/input").json()
+    assert set(body) - names == {"video_filename", "cover_filename"}
+
+
+def test_input_reports_bare_filenames_only(tmp_path):
+    client, cfg = make_client(tmp_path, ok_runner)
+    resp = client.post("/api/jobs", data={"title": "T", "artist": "A", "lyrics": "x"},
+                        files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4"),
+                               "cover": ("c.jpg", io.BytesIO(b"img"), "image/jpeg")})
+    job_id = resp.json()["id"]
+    wait_status(client, job_id, "done")
+    body = client.get(f"/api/jobs/{job_id}/input").json()
+    assert body["video_filename"] == "v.mp4"
+    assert body["cover_filename"] == "c.jpg"
+    assert "/" not in body["video_filename"]
+    assert str(tmp_path) not in resp.text
+
+
+def test_input_of_an_unknown_job_is_404(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.get("/api/jobs/nope/input").status_code == 404
