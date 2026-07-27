@@ -324,3 +324,13 @@ def test_index_renders_api_data_without_innerhtml():
 
 def test_index_respects_reduced_motion():
     assert "prefers-reduced-motion" in _index_html()
+
+
+def test_index_parses_warnings_with_endash():
+    html = _index_html()
+    assert "–" in html, "warning parser must handle the en-dash separator"
+    assert "data-start" in html and "data-end" in html
+
+
+def test_index_has_copy_path_control():
+    assert "copy-path" in _index_html()

@@ -293,6 +293,56 @@ button { cursor: pointer; }
 #form-error { margin: 12px 0 0; min-height: 1.2em; font-size: 0.85rem; color: var(--fail); }
 
 #review { margin-top: 38px; }
+#review h3 {
+  margin: -8px 0 16px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1rem;
+}
+#review h3 span { color: var(--text-muted); font-weight: 400; }
+
+#warnings { display: flex; flex-direction: column; gap: 1px; }
+.warn-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.warn-row + .warn-row { margin-top: 6px; }
+.warn-icon { color: var(--warn); }
+.warn-count { font-size: 0.85rem; }
+.warn-range { justify-self: end; font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-muted); }
+
+.review-error { margin: 0 0 14px; font-size: 0.85rem; color: var(--fail); }
+
+.output-path {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.output-path code { flex: 1; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 0.82rem; }
+#copy-path {
+  flex: none;
+  padding: 5px 12px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: var(--panel-raised);
+  border: 1px solid var(--control);
+  border-radius: 2px;
+}
+#copy-path:hover { border-color: var(--text-muted); }
+
 #detail {
   margin: 13px 0 0;
   padding: 14px;
@@ -406,10 +456,13 @@ button { cursor: pointer; }
 
   <section id="review">
     <h2>REVIEW</h2>
-    <div id="warnings"></div>
+    <h3 id="review-title"></h3>
+    <p id="review-error" class="review-error" hidden></p>
+    <div id="warnings"><p class="empty-note">select a song from the queue to review it</p></div>
+    <div id="output-path"></div>
     <details>
       <summary>Log</summary>
-      <pre id="detail">select a job</pre>
+      <pre id="detail">select a song from the queue to see its log</pre>
     </details>
   </section>
 </main>
@@ -425,7 +478,12 @@ const form = document.getElementById("song-form");
 const formError = document.getElementById("form-error");
 const jobsDiv = document.getElementById("jobs");
 const detail = document.getElementById("detail");
+const reviewTitle = document.getElementById("review-title");
+const reviewError = document.getElementById("review-error");
+const outputPathDiv = document.getElementById("output-path");
 let selectedId = null;
+
+const WARN_RE = /^(\d+)\s+low-confidence notes?\s+near\s+(\d+:\d{2})–(\d+:\d{2})/;
 
 const STATE = {
   queued:  { glyph: "○", cls: "st-queued"  },
@@ -522,20 +580,89 @@ async function selectJob(id) {
   refreshDetail();
 }
 
+function emptyNote(text) {
+  const p = document.createElement("p");
+  p.className = "empty-note";
+  p.textContent = text;
+  return p;
+}
+
+function renderWarnings(job) {
+  const box = document.getElementById("warnings");
+  if (job.status !== "done" && job.status !== "failed") {
+    box.replaceChildren(emptyNote("waiting for this song to finish…"));
+    return;
+  }
+  if (!job.warnings.length) {
+    box.replaceChildren(emptyNote("no low-confidence regions — nothing to review"));
+    return;
+  }
+  const rows = job.warnings.map(w => {
+    const m = WARN_RE.exec(w);
+    const row = document.createElement("div");
+    row.className = "warn-row";
+    if (m) {
+      row.setAttribute("data-count", m[1]);
+      row.setAttribute("data-start", m[2]);
+      row.setAttribute("data-end", m[3]);
+      const icon = document.createElement("span");
+      icon.className = "warn-icon";
+      icon.textContent = "⚠";
+      const count = document.createElement("span");
+      count.className = "warn-count";
+      count.textContent = `${m[1]} note${m[1] === "1" ? "" : "s"}`;
+      const range = document.createElement("span");
+      range.className = "warn-range";
+      range.textContent = `${m[2]}–${m[3]}`;
+      row.append(icon, count, range);
+    } else {
+      row.textContent = w;
+    }
+    return row;
+  });
+  box.replaceChildren(...rows);
+}
+
+async function copyPath(path, button) {
+  try {
+    await navigator.clipboard.writeText(path);
+    button.textContent = "copied";
+  } catch {
+    button.textContent = "copy failed";
+  }
+  setTimeout(() => { button.textContent = "copy"; }, 1500);
+}
+
+function renderOutputPath(job) {
+  if (!job.output_dir || job.status !== "done") {
+    outputPathDiv.replaceChildren();
+    return;
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "output-path";
+  const code = document.createElement("code");
+  code.textContent = job.output_dir;
+  const button = document.createElement("button");
+  button.id = "copy-path";
+  button.type = "button";
+  button.textContent = "copy";
+  button.addEventListener("click", () => copyPath(job.output_dir, button));
+  wrap.append(code, button);
+  outputPathDiv.replaceChildren(wrap);
+}
+
 async function refreshDetail() {
   const resp = await fetch(`/api/jobs/${selectedId}`);
   if (!resp.ok) return;
   const job = await resp.json();
-  const lines = [
-    `status: ${job.status}`,
-    `stage: ${job.stage ?? ""}`,
-    job.output_dir ? `output_dir: ${job.output_dir}` : null,
-    job.error ? `error: ${job.error}` : null,
-    job.warnings.length ? `warnings:\n  ${job.warnings.join("\n  ")}` : null,
-    "log:",
-    ...job.log,
-  ].filter(l => l !== null);
-  detail.textContent = lines.join("\n");
+  const artist = document.createElement("span");
+  artist.textContent = job.artist;
+  reviewTitle.replaceChildren(`${job.title} `, artist);
+  reviewError.hidden = !job.error;
+  reviewError.textContent = job.error ?? "";
+  renderWarnings(job);
+  renderOutputPath(job);
+  detail.textContent = job.log.join("\n");
 }
 
 setInterval(refreshJobs, 3000);
