@@ -316,6 +316,10 @@ def test_index_renders_api_data_without_innerhtml():
     html = _index_html()
     for m in _re.finditer(r"\.(innerHTML|outerHTML|insertAdjacentHTML)\s*(=|\()\s*(.*)", html):
         assert "${" not in m.group(3), f"interpolation into {m.group(1)}: {m.group(3)[:80]}"
+    # the page reaches the same end by never naming a markup-parsing sink at all,
+    # which also catches `el.innerHTML = job.title` (no interpolation to spot)
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML"):
+        assert sink not in html, f"{sink} must not appear in the page"
 
 
 def test_index_respects_reduced_motion():
