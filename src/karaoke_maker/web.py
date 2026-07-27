@@ -114,6 +114,20 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             f" ({', '.join(changed) if changed else 'nothing'} changed)")
         return force_from
 
+    def _drop_superseded_output(job: Job, log) -> None:
+        if not job.rebuilt_from:
+            return
+        with lock:
+            parent = jobs.get(job.rebuilt_from)
+        if parent is None or parent.status != "done":
+            return
+        old = rebuild_policy.superseded_output(parent.output_dir, job.output_dir,
+                                                cfg.output_dir)
+        if old is None:
+            return
+        shutil.rmtree(old, ignore_errors=True)
+        log(f"[rebuild] removed superseded {old.name}")
+
     def worker():
         while True:
             job_id = todo.get()
@@ -132,9 +146,11 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 force_from = _prepare_rebuild(job, log)
                 result = runner(job.inp, cfg, log=log, force_from=force_from)
                 with lock:
-                    job.status = "done"
                     job.output_dir = str(result.output_dir)
                     job.warnings = list(result.warnings)
+                _drop_superseded_output(job, log)
+                with lock:
+                    job.status = "done"
                 # uploads survive a failure so the job stays rerunnable; acquire
                 # has already copied the video into the work dir by now.
                 _cleanup_uploads(cfg, job_id, job.inp.video_path)

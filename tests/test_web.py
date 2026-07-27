@@ -821,3 +821,60 @@ def test_rebuild_of_a_running_job_is_409(tmp_path):
 def test_rebuild_of_an_unknown_job_is_404(tmp_path):
     client, _ = make_client(tmp_path, ok_runner)
     assert client.post("/api/jobs/nope/rebuild", data=rebuild_form()).status_code == 404
+
+
+def slug_runner(inp, cfg, log=print, force_from=None, stages=None):
+    out = cfg.output_dir / song_slug(inp)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "song.txt").write_text(f"#TITLE:{inp.title}\n")
+    return PipelineResult(output_dir=out)
+
+
+def test_rebuild_removes_the_output_it_replaced(tmp_path):
+    client, cfg = make_client(tmp_path, slug_runner)
+    parent = make_done_job(client)
+    assert (cfg.output_dir / "A - T" / "song.txt").exists()
+    child = client.post(f"/api/jobs/{parent}/rebuild",
+                        data=rebuild_form(title="T2")).json()["id"]
+    job = wait_status(client, child, "done")
+    assert (cfg.output_dir / "A - T2" / "song.txt").exists()
+    assert not (cfg.output_dir / "A - T").exists()
+    assert any("superseded" in line for line in job["log"])
+
+
+def test_rebuild_keeps_the_output_when_the_slug_is_unchanged(tmp_path):
+    client, cfg = make_client(tmp_path, slug_runner)
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild",
+                        data=rebuild_form(year="1998")).json()["id"]
+    wait_status(client, child, "done")
+    assert (cfg.output_dir / "A - T" / "song.txt").exists()
+
+
+def test_rebuild_of_a_failed_parent_removes_nothing(tmp_path):
+    calls = []
+
+    def flaky(inp, cfg, log=print, force_from=None, stages=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise PipelineError("boom")
+        return slug_runner(inp, cfg, log=log)
+
+    client, cfg = make_client(tmp_path, flaky)
+    parent = client.post("/api/jobs", data=rebuild_form()).json()["id"]
+    wait_status(client, parent, "failed")
+    (cfg.output_dir / "A - T").mkdir(parents=True)
+    (cfg.output_dir / "A - T" / "keep.txt").write_text("mine")
+    child = client.post(f"/api/jobs/{parent}/rebuild",
+                        data=rebuild_form(title="T2")).json()["id"]
+    wait_status(client, child, "done")
+    assert (cfg.output_dir / "A - T" / "keep.txt").exists()
+
+
+def test_a_plain_job_never_removes_anything(tmp_path):
+    client, cfg = make_client(tmp_path, slug_runner)
+    make_done_job(client)
+    stray = cfg.output_dir / "A - Other"
+    stray.mkdir(parents=True)
+    make_done_job(client, title="T2")
+    assert stray.exists()
