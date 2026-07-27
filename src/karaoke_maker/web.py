@@ -47,6 +47,29 @@ async def _save_upload(upload: UploadFile, dest: Path) -> None:
         await run_in_threadpool(shutil.copyfileobj, upload.file, f)
 
 
+def _cleanup_uploads(cfg: Config, job_id: str, video_path: Path | None) -> None:
+    """Drop the video upload a finished job no longer needs.
+
+    Covers are left behind: they are small, and a rebuild inherits cover_path, so
+    removing one would silently strip #COVER from the rebuilt song. A rebuild can
+    also inherit its parent's upload, so the directory is not always uploads/<job_id>.
+    Never raises — the caller has already marked the job done.
+    """
+    uploads = (cfg.work_dir / "uploads").resolve()
+    dirs = {uploads / job_id}
+    if video_path is not None:
+        target = Path(video_path)
+        parent = target.resolve().parent
+        if parent.parent == uploads:
+            target.unlink(missing_ok=True)
+            dirs.add(parent)
+    for d in dirs:
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+
+
 def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     app = FastAPI()
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -75,6 +98,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                     job.status = "done"
                     job.output_dir = str(result.output_dir)
                     job.warnings = list(result.warnings)
+                # uploads survive a failure so the job stays rerunnable; acquire
+                # has already copied the video into the work dir by now.
+                _cleanup_uploads(cfg, job_id, job.inp.video_path)
             except BaseException as e:
                 with lock:
                     job.status = "failed"
@@ -82,10 +108,6 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             finally:
                 with lock:
                     job.finished_at = time.time()
-                # safe: acquire copies the upload into the per-song work dir
-                # and package reads cover_path directly, both inside runner()
-                # above, before this cleanup runs.
-                shutil.rmtree(cfg.work_dir / "uploads" / job_id, ignore_errors=True)
 
     threading.Thread(target=worker, daemon=True).start()
 

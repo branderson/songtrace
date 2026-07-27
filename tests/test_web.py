@@ -153,7 +153,8 @@ def test_upload_dir_cleaned_up_after_success(tmp_path):
     assert not (cfg.work_dir / "uploads" / job_id).exists()
 
 
-def test_upload_dir_cleaned_up_after_failure(tmp_path):
+def test_upload_retained_after_failure(tmp_path):
+    """A job that died inside acquire must keep its source, or it can never rerun."""
     def bad_runner(*a, **kw):
         raise PipelineError("boom")
     client, cfg = make_client(tmp_path, bad_runner)
@@ -161,7 +162,51 @@ def test_upload_dir_cleaned_up_after_failure(tmp_path):
                         files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4")})
     job_id = resp.json()["id"]
     wait_status(client, job_id, "failed")
-    assert not (cfg.work_dir / "uploads" / job_id).exists()
+    assert (cfg.work_dir / "uploads" / job_id / "v.mp4").exists()
+
+
+def test_cover_upload_kept_after_success(tmp_path):
+    """A rebuild inherits cover_path; deleting it would silently drop #COVER."""
+    client, cfg = make_client(tmp_path, ok_runner)
+    resp = client.post("/api/jobs", data={"title": "T", "artist": "A", "lyrics": "x"},
+                        files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4"),
+                               "cover": ("c.jpg", io.BytesIO(b"img"), "image/jpeg")})
+    job_id = resp.json()["id"]
+    wait_status(client, job_id, "done")
+    updir = cfg.work_dir / "uploads" / job_id
+    assert (updir / "c.jpg").read_bytes() == b"img"
+    assert not (updir / "v.mp4").exists()
+
+
+def test_cleanup_uploads_removes_an_inherited_upload_dir(tmp_path):
+    """A rebuild's video may live under its parent's id, not its own."""
+    from karaoke_maker.web import _cleanup_uploads
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work",
+                 output_dir=tmp_path / "out")
+    parent = cfg.work_dir / "uploads" / "parent"
+    parent.mkdir(parents=True)
+    (parent / "v.mp4").write_bytes(b"data")
+    _cleanup_uploads(cfg, "child", parent / "v.mp4")
+    assert not parent.exists()
+
+
+def test_cleanup_uploads_ignores_paths_outside_the_upload_root(tmp_path):
+    from karaoke_maker.web import _cleanup_uploads
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work",
+                 output_dir=tmp_path / "out")
+    outside = tmp_path / "somewhere" / "keep.mp4"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"data")
+    _cleanup_uploads(cfg, "child", outside)
+    assert outside.exists()
+
+
+def test_cleanup_uploads_tolerates_a_missing_file(tmp_path):
+    from karaoke_maker.web import _cleanup_uploads
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work",
+                 output_dir=tmp_path / "out")
+    _cleanup_uploads(cfg, "child", cfg.work_dir / "uploads" / "child" / "gone.mp4")
+    _cleanup_uploads(cfg, "child", None)
 
 
 def test_jobs_run_one_at_a_time(tmp_path):
