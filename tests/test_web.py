@@ -286,3 +286,37 @@ def test_font_licence_is_bundled():
     from karaoke_maker.web import STATIC
     licence = (STATIC / "fonts" / "OFL.txt").read_text(encoding="utf-8", errors="replace")
     assert "SIL OPEN FONT LICENSE" in licence.upper()
+
+
+def _index_html():
+    from karaoke_maker.web import STATIC
+    return (STATIC / "index.html").read_text(encoding="utf-8")
+
+
+def test_index_has_required_hooks():
+    html = _index_html()
+    for hook in ("song-form", "jobs", "detail", "review", "now-bar", "sidebar"):
+        assert f'id="{hook}"' in html, hook
+    for name in ("title", "artist", "lyrics", "youtube_url", "video",
+                 "genre", "year", "language", "bpm", "cover"):
+        assert f'name="{name}"' in html, name
+
+
+def test_index_makes_no_external_requests():
+    import re as _re
+    html = _index_html()
+    for url in _re.findall(r'(?:src|href)\s*=\s*["\']([^"\']+)', html):
+        assert not url.startswith(("http://", "https://", "//")), url
+    assert "@import" not in html
+
+
+def test_index_renders_api_data_without_innerhtml():
+    """API-derived values must go through textContent, never innerHTML."""
+    import re as _re
+    html = _index_html()
+    for m in _re.finditer(r"\.(innerHTML|outerHTML|insertAdjacentHTML)\s*(=|\()\s*(.*)", html):
+        assert "${" not in m.group(3), f"interpolation into {m.group(1)}: {m.group(3)[:80]}"
+
+
+def test_index_respects_reduced_motion():
+    assert "prefers-reduced-motion" in _index_html()

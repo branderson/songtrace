@@ -2,41 +2,412 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>karaoke-maker</title>
 <style>
-  body { font-family: sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-  form { display: grid; gap: 0.5rem; margin-bottom: 2rem; }
-  label { display: flex; flex-direction: column; font-size: 0.9rem; }
-  textarea { min-height: 6rem; font-family: inherit; }
-  #jobs table { width: 100%; border-collapse: collapse; }
-  #jobs th, #jobs td { text-align: left; padding: 0.3rem; border-bottom: 1px solid #ccc; }
-  #jobs tr { cursor: pointer; }
-  #detail { background: #f4f4f4; padding: 1rem; white-space: pre-wrap; max-height: 20rem; overflow-y: auto; }
+@font-face {
+  font-family: "Chakra Petch";
+  src: url("/static/fonts/chakra-petch-600.woff2") format("woff2");
+  font-weight: 600; font-display: swap;
+}
+@font-face {
+  font-family: "Chakra Petch";
+  src: url("/static/fonts/chakra-petch-700.woff2") format("woff2");
+  font-weight: 700; font-display: swap;
+}
+
+:root {
+  --bg: #0A0A0F;
+  --panel: #14101F;
+  --panel-raised: #1E1730;
+  --border: #2E2440;
+  --text: #F0EDF7;
+  --text-muted: #9B92AD;
+  --purple: #A855F7;
+  --aqua: #22D3EE;
+  --warn: #FBBF24;
+  --fail: #FB5E7E;
+  --done: #C4A5F5;
+
+  --font-display: "Chakra Petch", system-ui, sans-serif;
+  --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  grid-template-rows: 1fr auto;
+  grid-template-areas: "sidebar main" "now now";
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+
+.eyebrow {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.68rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.empty-note { margin: 0; font-size: 0.82rem; color: var(--text-muted); }
+
+/* --- sidebar ------------------------------------------------------------ */
+
+#sidebar {
+  grid-area: sidebar;
+  overflow-y: auto;
+  padding: 24px 0 28px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.brand { padding: 0 18px; }
+
+.wordmark {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.15rem;
+  line-height: 0.98;
+  letter-spacing: 0.2em;
+}
+.wordmark span { display: block; }
+.wordmark .second { color: var(--purple); }
+
+.kana {
+  margin-top: 9px;
+  font-size: 0.72rem;
+  letter-spacing: 0.4em;
+  color: var(--purple);
+}
+
+#sidebar .eyebrow, #jobs .empty-note { padding: 0 18px; }
+
+#jobs { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
+
+.job {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px 10px;
+  width: 100%;
+  padding: 10px 16px 11px 15px;
+  border: 0;
+  border-left: 3px solid var(--border);
+  border-radius: 0;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+/* inset so the sidebar's scroll container cannot clip the left edge */
+.job:focus-visible { outline-offset: -2px; }
+.job:hover { background: var(--panel-raised); }
+.job[aria-current="true"] { background: var(--panel-raised); }
+.job[aria-current="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 2px;
+  background: var(--purple);
+}
+
+.job-title {
+  grid-area: 1 / 1;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.9rem;
+  letter-spacing: 0.01em;
+}
+.job-artist { grid-area: 2 / 1; font-size: 0.78rem; color: var(--text-muted); }
+.job-title, .job-artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.job-state {
+  grid-area: 3 / 1;
+  margin-top: 4px;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.job-glyph { font-size: 0.8rem; }
+.job-elapsed {
+  grid-area: 3 / 2;
+  align-self: end;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.st-queued .job-glyph { color: var(--text-muted); }
+.st-running { border-left-color: var(--aqua); box-shadow: inset 7px 0 14px -7px var(--aqua); }
+.st-running .job-glyph, .st-running .job-state { color: var(--aqua); }
+.st-done { border-left-color: var(--done); }
+.st-done .job-glyph { color: var(--done); }
+.st-failed { border-left-color: var(--fail); }
+.st-failed .job-glyph, .st-failed .job-state { color: var(--fail); }
+
+/* --- main --------------------------------------------------------------- */
+
+#main { grid-area: main; overflow-y: auto; padding: 30px 34px 36px; }
+#main > section { max-width: 760px; }
+#main h2 {
+  margin: 0 0 18px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: 0.22em;
+  color: var(--text-muted);
+}
+
+#song-form { display: grid; gap: 18px; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > span {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+input, textarea {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 7px 2px;
+  transition: border-color 120ms ease;
+}
+input:not([type="file"]):hover { border-bottom-color: var(--text-muted); }
+input:not([type="file"]):focus { border-bottom-color: var(--aqua); }
+
+textarea {
+  min-height: 8.5rem;
+  padding: 11px 13px;
+  line-height: 1.6;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  resize: vertical;
+}
+textarea:hover { border-color: var(--text-muted); }
+textarea:focus { border-color: var(--aqua); }
+
+input[type="file"] {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  padding: 10px;
+  background: var(--panel);
+  border: 1px dashed var(--border);
+}
+input[type="file"]:hover { border-color: var(--text-muted); }
+input[type="file"]::file-selector-button {
+  margin-right: 11px;
+  padding: 6px 11px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text);
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+details { border-top: 1px solid var(--border); padding-top: 15px; }
+summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.68rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: pointer;
+  list-style: none;
+}
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "+"; font-family: var(--font-mono); color: var(--aqua); }
+details[open] > summary::before { content: "\2212"; }
+summary:hover { color: var(--text); }
+details > .stack { display: grid; gap: 18px; margin-top: 18px; }
+
+button { cursor: pointer; }
+.primary {
+  justify-self: start;
+  padding: 12px 24px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #12061F;
+  background: var(--purple);
+  border: 0;
+  border-radius: 2px;
+  transition: background 120ms ease;
+}
+.primary:hover { background: #BE7BF9; }
+
+#form-error { margin: 12px 0 0; min-height: 1.2em; font-size: 0.85rem; color: var(--fail); }
+
+#review { margin-top: 38px; }
+#detail {
+  margin: 13px 0 0;
+  padding: 14px;
+  max-height: 20rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.65;
+  color: var(--text-muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+/* --- now bar ------------------------------------------------------------ */
+
+#now-bar {
+  grid-area: now;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 13px 20px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+#now-label {
+  flex: none;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.62rem;
+  letter-spacing: 0.22em;
+  color: var(--text-muted);
+}
+#now-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#now-bar.idle #now-title { color: var(--text-muted); font-weight: 400; font-family: var(--font-body); font-size: 0.82rem; }
+#stage-track { display: flex; align-items: center; gap: 15px; margin-left: auto; }
+
+/* --- responsive --------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas: "sidebar" "main" "now";
+  }
+  #sidebar {
+    max-height: 42vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  #main { padding: 24px 18px 28px; }
+  .pair { grid-template-columns: 1fr; }
+  #now-bar { flex-wrap: wrap; gap: 8px 16px; }
+  #stage-track { margin-left: 0; flex-wrap: wrap; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
 </style>
 </head>
 <body>
-<h1>karaoke-maker</h1>
 
-<form id="song-form">
-  <label>Title <input name="title" required></label>
-  <label>Artist <input name="artist" required></label>
-  <label>Lyrics <textarea name="lyrics" required></textarea></label>
-  <label>YouTube URL <input name="youtube_url"></label>
-  <label>Video file <input type="file" name="video"></label>
-  <label>Genre <input name="genre"></label>
-  <label>Year <input name="year" type="number"></label>
-  <label>Language <input name="language"></label>
-  <label>BPM override <input name="bpm" type="number" step="any"></label>
-  <label>Cover image <input type="file" name="cover"></label>
-  <button type="submit">Submit</button>
-</form>
-<p id="form-error" style="color: red;"></p>
+<aside id="sidebar">
+  <div class="brand">
+    <h1 class="wordmark"><span>KARAOKE</span> <span class="second">MAKER</span></h1>
+    <div class="kana" aria-hidden="true">カラオケ</div>
+  </div>
+  <div>
+    <h2 class="eyebrow">QUEUE</h2>
+    <div id="jobs"></div>
+  </div>
+</aside>
 
-<h2>Jobs</h2>
-<div id="jobs"></div>
+<main id="main">
+  <section id="new-song">
+    <h2>NEW SONG</h2>
+    <form id="song-form">
+      <div class="pair">
+        <label class="field"><span>Title</span><input name="title" required></label>
+        <label class="field"><span>Artist</span><input name="artist" required></label>
+      </div>
+      <label class="field"><span>Lyrics</span><textarea name="lyrics" required></textarea></label>
+      <details>
+        <summary>Advanced</summary>
+        <div class="stack">
+          <label class="field"><span>YouTube URL</span><input name="youtube_url"></label>
+          <label class="field"><span>Video file</span><input type="file" name="video"></label>
+          <div class="pair">
+            <label class="field"><span>Genre</span><input name="genre"></label>
+            <label class="field"><span>Year</span><input name="year" type="number"></label>
+          </div>
+          <div class="pair">
+            <label class="field"><span>Language</span><input name="language"></label>
+            <label class="field"><span>BPM override</span><input name="bpm" type="number" step="any"></label>
+          </div>
+          <label class="field"><span>Cover image</span><input type="file" name="cover"></label>
+        </div>
+      </details>
+      <button type="submit" class="primary">CREATE SONG</button>
+    </form>
+    <p id="form-error" role="alert"></p>
+  </section>
 
-<h2>Detail</h2>
-<pre id="detail">select a job</pre>
+  <section id="review">
+    <h2>REVIEW</h2>
+    <div id="warnings"></div>
+    <details>
+      <summary>Log</summary>
+      <pre id="detail">select a job</pre>
+    </details>
+  </section>
+</main>
+
+<footer id="now-bar" class="idle">
+  <span id="now-label">NOW RUNNING</span>
+  <span id="now-title">nothing in progress</span>
+  <div id="stage-track"></div>
+</footer>
 
 <script>
 const form = document.getElementById("song-form");
@@ -44,6 +415,21 @@ const formError = document.getElementById("form-error");
 const jobsDiv = document.getElementById("jobs");
 const detail = document.getElementById("detail");
 let selectedId = null;
+
+const STATE = {
+  queued:  { glyph: "○", cls: "st-queued"  },
+  running: { glyph: "◈", cls: "st-running" },
+  done:    { glyph: "●", cls: "st-done"    },
+  failed:  { glyph: "✕", cls: "st-failed"  },
+};
+
+function elapsed(job) {
+  if (!job.started_at) return "";
+  const end = job.finished_at ?? Date.now() / 1000;
+  const secs = Math.max(0, Math.round(end - job.started_at));
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return m ? `${m}m${String(s).padStart(2, "0")}s` : `${s}s`;
+}
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -64,24 +450,50 @@ form.addEventListener("submit", async (e) => {
   refreshJobs();
 });
 
+function jobCard(job) {
+  const state = STATE[job.status] ?? { glyph: "·", cls: "st-queued" };
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = `job ${state.cls}`;
+  card.dataset.id = job.id;
+  if (job.id === selectedId) card.setAttribute("aria-current", "true");
+
+  const title = document.createElement("span");
+  title.className = "job-title";
+  title.textContent = job.title;
+
+  const artist = document.createElement("span");
+  artist.className = "job-artist";
+  artist.textContent = job.artist;
+
+  const glyph = document.createElement("span");
+  glyph.className = "job-glyph";
+  glyph.setAttribute("aria-hidden", "true");
+  glyph.textContent = state.glyph;
+  const status = document.createElement("span");
+  status.textContent = job.stage ? `${job.status} · ${job.stage}` : job.status;
+  const stateLine = document.createElement("span");
+  stateLine.className = "job-state";
+  stateLine.append(glyph, status);
+
+  const time = document.createElement("span");
+  time.className = "job-elapsed";
+  time.textContent = elapsed(job);
+
+  card.append(title, artist, stateLine, time);
+  card.addEventListener("click", () => selectJob(job.id));
+  return card;
+}
+
 function renderJobs(jobs) {
-  const table = document.createElement("table");
-  const thead = document.createElement("thead");
-  thead.innerHTML = "<tr><th>Title</th><th>Artist</th><th>Status</th><th>Stage</th></tr>";
-  const tbody = document.createElement("tbody");
-  for (const j of jobs) {
-    const row = document.createElement("tr");
-    row.dataset.id = j.id;
-    for (const value of [j.title, j.artist, j.status, j.stage ?? ""]) {
-      const cell = document.createElement("td");
-      cell.textContent = value;
-      row.appendChild(cell);
-    }
-    row.addEventListener("click", () => selectJob(j.id));
-    tbody.appendChild(row);
+  if (!jobs.length) {
+    const note = document.createElement("p");
+    note.className = "empty-note";
+    note.textContent = "No songs yet. Create one to get started.";
+    jobsDiv.replaceChildren(note);
+    return;
   }
-  table.append(thead, tbody);
-  jobsDiv.replaceChildren(table);
+  jobsDiv.replaceChildren(...jobs.map(jobCard));
 }
 
 async function refreshJobs() {
@@ -92,6 +504,10 @@ async function refreshJobs() {
 
 async function selectJob(id) {
   selectedId = id;
+  for (const card of jobsDiv.querySelectorAll(".job")) {
+    if (card.dataset.id === id) card.setAttribute("aria-current", "true");
+    else card.removeAttribute("aria-current");
+  }
   refreshDetail();
 }
 
