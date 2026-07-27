@@ -273,3 +273,16 @@ def test_unrelated_log_lines_do_not_change_stage(tmp_path):
         "title": "T", "artist": "A", "lyrics": "la", "youtube_url": "http://y"})
     job = wait_status(client, resp.json()["id"], "done")
     assert job["stage"] == "align"
+
+
+def test_fonts_are_served(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    resp = client.get("/static/fonts/chakra-petch-600.woff2")
+    assert resp.status_code == 200
+    assert resp.content[:4] == b"wOF2"
+
+
+def test_font_licence_is_bundled():
+    from karaoke_maker.web import STATIC
+    licence = (STATIC / "fonts" / "OFL.txt").read_text(encoding="utf-8", errors="replace")
+    assert "SIL OPEN FONT LICENSE" in licence.upper()

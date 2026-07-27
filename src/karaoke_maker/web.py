@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import Config
 from .pipeline import STAGE_ORDER, PipelineError, SongInput, run_pipeline
@@ -48,6 +49,7 @@ async def _save_upload(upload: UploadFile, dest: Path) -> None:
 
 def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     app = FastAPI()
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")
     jobs: dict[str, Job] = {}
     order: list[str] = []
     lock = threading.Lock()
