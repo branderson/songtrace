@@ -498,6 +498,29 @@ def test_running_stage_pulses_unless_motion_is_reduced():
     assert _pulse_flaws(_index_html()) == []
 
 
+def _submit_body(html):
+    start = html.index('form.addEventListener("submit"')
+    return html[start:html.index("\n});\n", start)]
+
+
+def _rebuild_flaws(html):
+    """Ways rebuild mode could quietly stop working."""
+    flaws, submit = [], _submit_body(html)
+    if "rebuildOf ?" not in submit or "/rebuild" not in submit:
+        flaws.append("the form always posts to /api/jobs, so edits create a new song")
+
+    actions = _fn_body(html, "renderActions")
+    if not re.search(r"if \(.*dataset\.jobId === job\.id.*\) return;", actions):
+        flaws.append("the action row is rebuilt on every poll, blurring a focused button")
+    if '"failed"' not in actions or '"done"' not in actions:
+        flaws.append("the action row does not key off the job status")
+
+    start = _fn_body(html, "startRebuild")
+    if "/input" not in start or "form.elements[" not in start:
+        flaws.append("rebuild mode does not prefill the form from the job's input")
+    return flaws
+
+
 # each mutation is a plausible regression; the checker above must reject all of them
 MUTATIONS = [
     (_focus_flaws, "queue: card moved unconditionally",
@@ -520,6 +543,12 @@ MUTATIONS = [
      ".stage-pending .stage-dot { color: var(--aqua); animation: stage-pulse"),
     (_pulse_flaws, "pulse: reduced motion no longer wins",
      "animation: none !important", "animation: none"),
+    (_rebuild_flaws, "rebuild: form posts to /api/jobs even in rebuild mode",
+     'const url = rebuildOf ? `/api/jobs/${rebuildOf}/rebuild` : "/api/jobs";',
+     'const url = "/api/jobs";'),
+    (_rebuild_flaws, "rebuild: action row rebuilt on every poll",
+     "if (reviewActions.dataset.jobId === job.id && shown.join() === wanted.join()) return;",
+     ""),
 ]
 
 
@@ -545,6 +574,32 @@ def test_narrow_stage_labels_stay_in_the_accessibility_tree():
                        _page_css(_index_html()))
     assert hidden, "the compact stage track rule moved or was renamed"
     assert "display: none" not in hidden[1] and "visibility: hidden" not in hidden[1]
+
+
+def test_rebuild_mode_reuses_the_one_form():
+    html = _index_html()
+    assert html.count("<form") == 1
+    assert _rebuild_flaws(html) == []
+
+
+def test_index_has_rebuild_hooks():
+    html = _index_html()
+    for hook in ("review-actions", "review-lineage", "cancel-rebuild",
+                 'data-keep="video"', 'data-keep="cover"'):
+        assert hook in html, hook
+
+
+def test_rebuild_controls_are_not_offered_mid_run():
+    """Both endpoints answer 409 while a job is queued or running."""
+    actions = _fn_body(_index_html(), "renderActions")
+    assert '"queued"' not in actions and '"running"' not in actions
+
+
+def test_lineage_marker_survives_in_the_accessibility_tree():
+    html = _index_html()
+    body = _fn_body(html, "paintCard")
+    assert "rebuilt_from" in body
+    assert '"sr-only"' in _fn_body(html, "jobCard")
 
 
 def make_done_job(client, **overrides):
