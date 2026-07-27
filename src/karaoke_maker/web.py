@@ -61,7 +61,10 @@ def _cleanup_uploads(cfg: Config, job_id: str, video_path: Path | None) -> None:
         target = Path(video_path)
         parent = target.resolve().parent
         if parent.parent == uploads:
-            target.unlink(missing_ok=True)
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
             dirs.add(parent)
     for d in dirs:
         try:
