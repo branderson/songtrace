@@ -171,6 +171,7 @@ body {
   color: var(--text-muted);
 }
 
+.st-queued { border-left-color: var(--control); }
 .st-queued .job-glyph { color: var(--text-muted); }
 .st-running { border-left-color: var(--aqua); box-shadow: inset 7px 0 14px -7px var(--aqua); }
 .st-running .job-glyph, .st-running .job-state { color: var(--aqua); }
@@ -499,17 +500,17 @@ button { cursor: pointer; }
     <h2>REVIEW</h2>
     <h3 id="review-title"></h3>
     <p id="review-error" class="review-error" hidden></p>
-    <div id="warnings"><p class="empty-note">select a song from the queue to review it</p></div>
+    <div id="warnings"><p class="empty-note">no songs queued yet — nothing to review</p></div>
     <div id="output-path"></div>
     <details>
       <summary>Log</summary>
-      <pre id="detail">select a song from the queue to see its log</pre>
+      <pre id="detail">no songs queued yet — nothing to log</pre>
     </details>
   </section>
 </main>
 
 <footer id="now-bar" class="idle">
-  <span id="now-label">NOW RUNNING</span>
+  <span id="now-label">IDLE</span>
   <span id="now-title">nothing in progress</span>
   <div id="stage-track"></div>
 </footer>
@@ -523,6 +524,7 @@ const reviewTitle = document.getElementById("review-title");
 const reviewError = document.getElementById("review-error");
 const outputPathDiv = document.getElementById("output-path");
 const nowBar = document.getElementById("now-bar");
+const nowLabel = document.getElementById("now-label");
 const nowTitle = document.getElementById("now-title");
 const stageTrack = document.getElementById("stage-track");
 let selectedId = null;
@@ -631,7 +633,7 @@ function paintCard(card, job) {
 // it, so a keyboard user would lose the queue on every poll
 function renderJobs(jobs) {
   if (!jobs.length) {
-    jobsDiv.replaceChildren(emptyNote("No songs yet. Create one to get started."));
+    jobsDiv.replaceChildren(emptyNote("no songs yet — create one to get started"));
     return;
   }
   const existing = new Map(
@@ -689,6 +691,7 @@ function renderStageTrack(job) {
 function renderNowBar(jobs) {
   const running = jobs.find(j => j.status === "running");
   nowBar.classList.toggle("idle", !running);
+  nowLabel.textContent = running ? "NOW RUNNING" : "IDLE";
   nowTitle.textContent = running ? `${running.title} · ${running.artist}` : "nothing in progress";
   renderStageTrack(running);
 }
@@ -731,7 +734,11 @@ function emptyNote(text) {
 
 function renderWarnings(job) {
   const box = document.getElementById("warnings");
-  if (job.status !== "done" && job.status !== "failed") {
+  if (job.status === "failed") {
+    box.replaceChildren(emptyNote("job failed — nothing to review"));
+    return;
+  }
+  if (job.status !== "done") {
     box.replaceChildren(emptyNote("waiting for this song to finish…"));
     return;
   }
@@ -766,12 +773,37 @@ function renderWarnings(job) {
 }
 
 async function copyPath(path, button) {
-  try {
-    await navigator.clipboard.writeText(path);
-    button.textContent = "copied";
-  } catch {
-    button.textContent = "copy failed";
+  let ok = false;
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(path);
+      ok = true;
+    } catch {}
   }
+  // navigator.clipboard is undefined outside secure contexts, which is the
+  // normal case for this intranet tool served over plain http
+  if (!ok) {
+    const ta = document.createElement("textarea");
+    ta.value = path;
+    ta.style.position = "fixed";
+    ta.style.left = "-1000px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    document.body.removeChild(ta);
+  }
+  if (!ok) {
+    const code = outputPathDiv.querySelector("code");
+    if (code) {
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+  button.textContent = ok ? "copied" : "copy failed";
   setTimeout(() => { button.textContent = "copy"; }, 1500);
 }
 
@@ -798,9 +830,11 @@ function renderOutputPath(job) {
 }
 
 async function refreshDetail() {
-  const resp = await fetch(`/api/jobs/${selectedId}`);
+  const id = selectedId;
+  const resp = await fetch(`/api/jobs/${id}`);
   if (!resp.ok) return;
   const job = await resp.json();
+  if (id !== selectedId) return;
   const artist = document.createElement("span");
   artist.textContent = job.artist;
   reviewTitle.replaceChildren(`${job.title} `, artist);

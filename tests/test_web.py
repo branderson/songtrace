@@ -414,6 +414,21 @@ def test_now_bar_state_follows_the_running_job():
     assert _now_bar_flaws(_index_html()) == []
 
 
+def _stale_detail_flaws(html):
+    """A slow response for a since-deselected job must not overwrite the UI."""
+    body = _fn_body(html, "refreshDetail")
+    m = re.search(r"const (\w+) = selectedId;", body)
+    if m is None:
+        return ["refreshDetail does not snapshot selectedId before fetching"]
+    if f"if ({m[1]} !== selectedId) return;" not in body:
+        return ["refreshDetail does not bail when selectedId changed during the fetch"]
+    return []
+
+
+def test_stale_detail_response_cannot_override_a_newer_selection():
+    assert _stale_detail_flaws(_index_html()) == []
+
+
 def _pulse_flaws(html):
     css, flaws = _page_css(html), []
     if "@keyframes stage-pulse" not in css:
@@ -453,6 +468,8 @@ MUTATIONS = [
     (_now_bar_flaws, "now bar: shows the newest job instead of the running one",
      'const running = jobs.find(j => j.status === "running")',
      "const running = jobs[0]"),
+    (_stale_detail_flaws, "refreshDetail: stale-response guard removed",
+     "if (id !== selectedId) return;", ""),
     (_pulse_flaws, "pulse: attached to the wrong stage",
      ".stage-active .stage-dot { color: var(--aqua); animation: stage-pulse",
      ".stage-pending .stage-dot { color: var(--aqua); animation: stage-pulse"),
