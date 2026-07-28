@@ -29,7 +29,7 @@ output.
 **The output is a best-effort draft**, not a finished song. Every run ends by
 printing the low-confidence regions it found (e.g.
 `3 low-confidence notes near 0:42–0:47`) — open the result in an UltraStar
-editor such as [Yass](http://www.yass-hq.de/) or
+editor such as [Yass](https://www.yass-along.com/) or
 [USDX](https://usdx.eu/) and touch those spots up before playing.
 
 ## Configuration
