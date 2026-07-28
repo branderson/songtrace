@@ -6,6 +6,7 @@ with a fixed set of jobs covering every status, then screenshots it.
 One-time setup: pip install -e '.[dev]' && playwright install chromium
 Run: python scripts/screenshot_webui.py
 """
+import json
 import tempfile
 import threading
 import time
@@ -16,12 +17,36 @@ import uvicorn
 from playwright.sync_api import sync_playwright
 
 from songtrace.config import Config
-from songtrace.pipeline import PipelineError, PipelineResult
+from songtrace.pipeline import PipelineError, PipelineResult, song_slug
 from songtrace.web import create_app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_IMAGE = REPO_ROOT / "docs" / "images" / "webui.png"
 STAGES = ["acquire", "separate", "transcribe", "align", "pitch", "notes", "grid", "package"]
+DEFAULT_LYRICS = "[verse]\n...\n[chorus]\n...\n"
+
+# public domain (16th century English folk song, author unknown)
+GREENSLEEVES_LYRICS = """\
+Alas, my love, you do me wrong
+To cast me off discourteously
+For I have loved you well and long
+Delighting in your company
+
+Greensleeves was all my joy
+Greensleeves was my delight
+Greensleeves was my heart of gold
+And who but my lady Greensleeves
+
+I have been ready at your hand
+To grant whatever you would crave
+I have both waged life and land
+Your love and good will for to have
+
+Greensleeves was all my joy
+Greensleeves was my delight
+Greensleeves was my heart of gold
+And who but my lady Greensleeves
+"""
 
 # order matters: the app has one worker thread, so each job runs in submission
 # order. "running" must be submitted after the done/failed ones complete and
@@ -33,6 +58,27 @@ SONGS = [
     ("Pink Moon", "Nick Drake", "done",
      {"warnings": ["2 low-confidence notes near 0:38–0:41",
                     "1 low-confidence note near 1:22–1:24"]}),
+    ("Landslide", "Fleetwood Mac", "done",
+     {"warnings": ["1 low-confidence note near 0:52–0:55"]}),
+    ("Greensleeves", "Traditional", "done",
+     {"lyrics": GREENSLEEVES_LYRICS,
+      "warnings": ["1 low-confidence note near 0:45–0:47",
+                   "1 line dropped (not sung) near \"for i have loved\"",
+                   "missing lyrics near 2:10–2:18"],
+      "review": {
+          "lines": [
+              {"index": 0, "text": "Alas, my love, you do me wrong",
+               "dropped": False,
+               "notes": [{"start": 12.0, "end": 12.4, "pitch": 0, "low_confidence": False},
+                         {"start": 12.5, "end": 12.9, "pitch": 2, "low_confidence": False}]},
+              {"index": 1, "text": "To cast me off discourteously",
+               "dropped": False,
+               "notes": [{"start": 45.0, "end": 45.4, "pitch": 4, "low_confidence": True}]},
+              {"index": 2, "text": "For I have loved you well and long",
+               "dropped": True, "notes": []},
+          ],
+          "missing_spans": [{"start": 130.0, "end": 138.0}],
+      }}),
     ("Such Great Heights", "The Postal Service", "failed",
      {"error": "yt-dlp: unable to download video data: HTTP Error 403: Forbidden"}),
     ("Time Escaping", "Big Thief", "running", {}),
@@ -51,6 +97,22 @@ def make_runner():
         if kind == "done":
             for s in STAGES:
                 log(f"[{s}] running")
+            if "review" in extra:
+                work = cfg.work_dir / song_slug(inp)
+                work.mkdir(parents=True, exist_ok=True)
+                notes = [
+                    {**n, "duration": n["end"] - n["start"], "text": "~",
+                     "line_index": line["index"]}
+                    for line in extra["review"]["lines"] for n in line["notes"]
+                ]
+                (work / "notes_sec.json").write_text(json.dumps({
+                    "notes": notes, "breaks": [], "warnings": extra["warnings"]}))
+                (work / "align_meta.json").write_text(json.dumps({
+                    "dropped_lines": [line["index"] for line in extra["review"]["lines"]
+                                      if line["dropped"]],
+                    "missing_spans": [[s["start"], s["end"]]
+                                      for s in extra["review"]["missing_spans"]],
+                }))
             out = cfg.output_dir / f"{inp.artist} - {inp.title}"
             out.mkdir(parents=True, exist_ok=True)
             return PipelineResult(output_dir=out, warnings=extra["warnings"])
@@ -76,11 +138,11 @@ def start_server(tmp_path: Path) -> str:
 
 
 def seed_jobs(base_url: str) -> None:
-    lyrics = "[verse]\n...\n[chorus]\n...\n"
     with httpx.Client(timeout=10) as client:
-        for title, artist, kind, _ in SONGS:
+        for title, artist, kind, extra in SONGS:
             resp = client.post(f"{base_url}/api/jobs", data={
-                "title": title, "artist": artist, "lyrics": lyrics,
+                "title": title, "artist": artist,
+                "lyrics": extra.get("lyrics", DEFAULT_LYRICS),
                 "youtube_url": "https://youtu.be/00000000000"})
             resp.raise_for_status()
             job_id = resp.json()["id"]
