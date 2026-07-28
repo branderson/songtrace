@@ -433,6 +433,23 @@ def test_index_lyrics_review_uses_endash_for_time_ranges():
     assert "–" in body
 
 
+def test_lyrics_review_cache_clears_on_job_status_change():
+    """Regression: switching between done/failed/running jobs must clear the
+    cache so a previously-viewed done job re-fetches when re-selected."""
+    html = _index_html()
+    body = _fn_body(html, "renderLyricsReview")
+    # The "failed" branch must clear the cache before rendering the placeholder
+    assert re.search(
+        r'if\s*\(\s*job\.status\s*===\s*"failed"\s*\)\s*\{[^}]*'
+        r'delete\s+box\.dataset\.jobId',
+        body, re.S), "failed branch must delete cache key"
+    # The "not done" (queued/running) branch must clear the cache before rendering
+    assert re.search(
+        r'if\s*\(\s*job\.status\s*!==\s*"done"\s*\)\s*\{[^}]*'
+        r'delete\s+box\.dataset\.jobId',
+        body, re.S), "not done branch must delete cache key"
+
+
 def test_index_has_copy_path_control():
     assert "copy-path" in _index_html()
 

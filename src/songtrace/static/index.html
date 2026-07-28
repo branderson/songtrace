@@ -872,10 +872,12 @@ function buildLyricsReview(data) {
 async function renderLyricsReview(job) {
   const box = document.getElementById("lyrics-review");
   if (job.status === "failed") {
+    delete box.dataset.jobId;
     box.replaceChildren(emptyNote("job failed — nothing to review"));
     return;
   }
   if (job.status !== "done") {
+    delete box.dataset.jobId;
     box.replaceChildren(emptyNote("waiting for this song to finish…"));
     return;
   }
