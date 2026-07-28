@@ -1004,6 +1004,52 @@ def test_rebuild_of_a_failed_parent_removes_nothing(tmp_path):
     assert (cfg.output_dir / "A - T" / "keep.txt").exists()
 
 
+def test_delete_removes_work_and_output_and_the_job(tmp_path):
+    client, cfg = make_client(tmp_path, slug_runner)
+    job_id = make_done_job(client)
+    (cfg.work_dir / "A - T").mkdir(parents=True)
+    (cfg.work_dir / "A - T" / "audio.wav").write_bytes(b"x")
+    assert (cfg.output_dir / "A - T").exists()
+
+    resp = client.delete(f"/api/jobs/{job_id}")
+
+    assert resp.status_code == 204
+    assert not (cfg.work_dir / "A - T").exists()
+    assert not (cfg.output_dir / "A - T").exists()
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+    assert job_id not in [j["id"] for j in client.get("/api/jobs").json()]
+
+
+def test_delete_tolerates_a_work_dir_that_is_already_gone(tmp_path):
+    client, cfg = make_client(tmp_path, slug_runner)
+    job_id = make_done_job(client)
+    resp = client.delete(f"/api/jobs/{job_id}")
+    assert resp.status_code == 204
+
+
+def test_delete_of_an_unknown_job_is_404(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.delete("/api/jobs/nope").status_code == 404
+
+
+def test_delete_of_a_running_job_is_409(tmp_path):
+    release = threading.Event()
+
+    def blocking(inp, cfg, log=print, force_from=None, stages=None):
+        release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, blocking)
+    parent = client.post("/api/jobs", data=rebuild_form()).json()["id"]
+    try:
+        wait_status(client, parent, "running")
+        assert client.delete(f"/api/jobs/{parent}").status_code == 409
+    finally:
+        release.set()
+    wait_status(client, parent, "done")
+    assert client.get(f"/api/jobs/{parent}").status_code == 200
+
+
 def test_a_plain_job_never_removes_anything(tmp_path):
     client, cfg = make_client(tmp_path, slug_runner)
     make_done_job(client)

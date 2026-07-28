@@ -313,6 +313,17 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 "video_filename": inp.video_path.name if inp.video_path else None,
                 "cover_filename": inp.cover_path.name if inp.cover_path else None}
 
+    @app.delete("/api/jobs/{job_id}", status_code=204)
+    def delete_job(job_id: str):
+        job = _finished_job(job_id)
+        slug = song_slug(job.inp)
+        shutil.rmtree(cfg.work_dir / slug, ignore_errors=True)
+        shutil.rmtree(cfg.output_dir / slug, ignore_errors=True)
+        with lock:
+            jobs.pop(job_id, None)
+            if job_id in order:
+                order.remove(job_id)
+
     return app
 
 
