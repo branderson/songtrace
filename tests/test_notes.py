@@ -295,3 +295,55 @@ def test_notes_stage_writes_json(tmp_path):
 
 def test_notes_stage_registered():
     assert "notes" in [s.name for s in all_stages()]
+
+
+def test_build_notes_skips_notes_within_missing_span():
+    times, f0, conf = flat_pitch()
+    rows = [
+        {"word": "keep", "start": 1.0, "end": 1.4, "score": 0.9, "line_index": 0},
+        {"word": "skip", "start": 5.0, "end": 5.4, "score": 0.9, "line_index": 1},
+    ]
+    notes, _, _ = build_notes(rows, times, f0, conf, "English",
+                              missing_spans=[(4.5, 6.0)])
+    assert [n.text for n in notes] == ["keep"]
+
+
+def test_warnings_report_dropped_lines():
+    times, f0, conf = flat_pitch()
+    rows = [{"word": "keep", "start": 1.0, "end": 1.4, "score": 0.9, "line_index": 0}]
+    ref_lines = [["keep"], ["the", "outro"]]
+    _, _, warnings = build_notes(rows, times, f0, conf, "English",
+                                 dropped_lines=[1], ref_lines=ref_lines)
+    assert warnings == ['1 line dropped (not sung) near "the outro"']
+
+
+def test_warnings_report_missing_spans():
+    times, f0, conf = flat_pitch()
+    rows = [{"word": "keep", "start": 1.0, "end": 1.4, "score": 0.9, "line_index": 0}]
+    _, _, warnings = build_notes(rows, times, f0, conf, "English",
+                                 missing_spans=[(81.0, 89.5)])
+    assert warnings == ["missing lyrics near 1:21–1:29"]
+
+
+def test_build_notes_skipped_row_mid_line_does_not_corrupt_spacing_or_breaks():
+    # "gone" falls inside a missing span and is skipped; "away" is the same
+    # line's next word and must still get its leading space, and the break
+    # before the next line must use the last *emitted* word's end (3.4, from
+    # "away"), not the skipped row's end (2.4).
+    times, f0, conf = flat_pitch()
+    rows = [
+        {"word": "keep", "start": 1.0, "end": 1.4, "score": 0.9, "line_index": 0},
+        {"word": "gone", "start": 2.0, "end": 2.4, "score": 0.9, "line_index": 0},
+        {"word": "away", "start": 3.0, "end": 3.4, "score": 0.9, "line_index": 0},
+        {"word": "next", "start": 5.0, "end": 5.4, "score": 0.9, "line_index": 1},
+    ]
+    notes, breaks, _ = build_notes(rows, times, f0, conf, "English",
+                                   missing_spans=[(1.9, 2.5)])
+    assert [n.text for n in notes] == ["keep", " away", "next"]
+    assert breaks == [(3.4 + 5.0) / 2]
+
+def test_notes_carry_line_index():
+    times, f0, conf = flat_pitch()
+    rows = [{"word": "hey", "start": 1.0, "end": 1.4, "score": 0.9, "line_index": 3}]
+    notes, _, _ = build_notes(rows, times, f0, conf, "English")
+    assert notes[0].line_index == 3
