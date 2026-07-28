@@ -68,6 +68,8 @@ The web UI is then at `http://localhost:8000`. Downloaded model weights
 (Demucs, wav2vec2, ...) are cached under `./data` on the host so they survive
 container recreation.
 
+![Web UI](docs/images/webui.png)
+
 Run the CLI inside the container instead of the web UI:
 
 ```sh
@@ -112,3 +114,18 @@ karaoke-maker make --title "..." --artist "..." --lyrics lyrics.txt \
 
 Valid stages, in pipeline order: `acquire`, `separate`, `transcribe`,
 `align`, `pitch`, `notes`, `grid`, `package`.
+
+## Regenerating the web UI screenshot
+
+`scripts/screenshot_webui.py` seeds the real app with a fixed set of jobs
+covering every status and screenshots it to `docs/images/webui.png`:
+
+```sh
+pip install -e '.[dev]'
+playwright install chromium
+python scripts/screenshot_webui.py
+```
+
+## License
+
+[GPLv3](LICENSE)

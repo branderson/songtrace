@@ -3,6 +3,7 @@ name = "karaoke-maker"
 version = "0.1.0"
 description = "Generate UltraStar/Melody Mania karaoke songs from a video and reference lyrics"
 requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
 dependencies = [
     "yt-dlp",
     "demucs",
@@ -22,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "playwright"]
 
 [project.scripts]
 karaoke-maker = "karaoke_maker.cli:main"
