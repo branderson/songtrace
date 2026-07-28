@@ -1,4 +1,6 @@
-# karaoke-maker
+# songtrace
+
+Turn a song and its lyrics into a playable UltraStar chart.
 
 A CLI and minimal web UI that turns a song — title, artist, lyrics you supply,
 and a YouTube URL or local video file — into a playable
@@ -35,8 +37,17 @@ editor such as [Yass](http://www.yass-hq.de/) or
 Config is TOML. Resolution order:
 
 1. `--config <path>` passed explicitly on the command line
-2. the `KARAOKE_MAKER_CONFIG` environment variable
-3. `~/.config/karaoke-maker/config.toml`
+2. the `SONGTRACE_CONFIG` environment variable
+3. `~/.config/songtrace/config.toml`
+
+If you used this project under its former name, move your existing config once:
+
+```sh
+mv ~/.config/karaoke-maker ~/.config/songtrace
+```
+
+The Docker deployment needs no migration — the image sets `SONGTRACE_CONFIG`
+itself and the config is bind-mounted to a fixed path.
 
 Copy the example and fill in your Whisper server:
 
@@ -73,7 +84,7 @@ container recreation.
 Run the CLI inside the container instead of the web UI:
 
 ```sh
-docker compose run --rm karaoke-maker karaoke-maker make \
+docker compose run --rm songtrace songtrace make \
   --title "Song Title" --artist "Artist Name" \
   --lyrics /data/lyrics.txt --youtube https://youtu.be/...
 ```
@@ -87,17 +98,17 @@ installed on the host; `docker-compose.yml` requests one GPU via the
 
 ```sh
 pip install -e .
-karaoke-maker make --help
+songtrace make --help
 ```
 
 ```
-karaoke-maker make --title TITLE --artist ARTIST --lyrics LYRICS_FILE \
+songtrace make --title TITLE --artist ARTIST --lyrics LYRICS_FILE \
   (--youtube URL | --video PATH) \
   [--genre GENRE] [--year YEAR] [--language LANGUAGE] [--cover COVER_IMAGE] \
   [--bpm BPM] [--force-from STAGE] [--config CONFIG]
 ```
 
-Run the web UI instead with `karaoke-maker serve [--config CONFIG]`.
+Run the web UI instead with `songtrace serve [--config CONFIG]`.
 
 ## Re-running a stage
 
@@ -108,7 +119,7 @@ stage and everything after it, reusing the cached output of everything
 before it:
 
 ```sh
-karaoke-maker make --title "..." --artist "..." --lyrics lyrics.txt \
+songtrace make --title "..." --artist "..." --lyrics lyrics.txt \
   --youtube https://youtu.be/... --force-from align
 ```
 
