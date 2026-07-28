@@ -1,4 +1,4 @@
-from karaoke_maker.lyrics import normalize_lyrics, alignment_token
+from songtrace.lyrics import normalize_lyrics, alignment_token
 
 RAW = """[Verse 1]
 It's one two three

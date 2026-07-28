@@ -1,6 +1,6 @@
-from karaoke_maker.lyrics import normalize_lyrics
-from karaoke_maker.whisper_client import TranscriptSegment
-from karaoke_maker.stages.transcribe import lyrics_similarity, vocal_sections
+from songtrace.lyrics import normalize_lyrics
+from songtrace.whisper_client import TranscriptSegment
+from songtrace.stages.transcribe import lyrics_similarity, vocal_sections
 
 def seg(s, e, t=""):
     return TranscriptSegment(start=s, end=e, text=t)

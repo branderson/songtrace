@@ -1,9 +1,9 @@
 import numpy as np
 import soundfile as sf
 import torch
-from karaoke_maker.config import Config
-from karaoke_maker.pipeline import Ctx, SongInput
-from karaoke_maker.stages import separate
+from songtrace.config import Config
+from songtrace.pipeline import Ctx, SongInput
+from songtrace.stages import separate
 
 
 def test_separate_writes_stems(tmp_path, monkeypatch):

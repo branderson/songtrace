@@ -2,9 +2,9 @@ import os
 
 import pytest
 
-import karaoke_maker.cli as cli
-from karaoke_maker.config import Config
-from karaoke_maker.pipeline import PipelineError, PipelineResult
+import songtrace.cli as cli
+from songtrace.config import Config
+from songtrace.pipeline import PipelineError, PipelineResult
 
 
 def setup_cfg(monkeypatch, tmp_path):

@@ -6,9 +6,9 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from karaoke_maker.config import Config
-from karaoke_maker.pipeline import STAGE_ORDER, PipelineError, PipelineResult, song_slug
-from karaoke_maker.web import STAGE_LINE, create_app
+from songtrace.config import Config
+from songtrace.pipeline import STAGE_ORDER, PipelineError, PipelineResult, song_slug
+from songtrace.web import STAGE_LINE, create_app
 
 
 def make_client(tmp_path, runner):
@@ -190,7 +190,7 @@ def test_cover_upload_kept_after_success(tmp_path):
 
 def test_cleanup_uploads_removes_an_inherited_upload_dir(tmp_path):
     """A rebuild's video may live under its parent's id, not its own."""
-    from karaoke_maker.web import _cleanup_uploads
+    from songtrace.web import _cleanup_uploads
     cfg = Config(whisper_url="u", work_dir=tmp_path / "work",
                  output_dir=tmp_path / "out")
     parent = cfg.work_dir / "uploads" / "parent"
@@ -201,7 +201,7 @@ def test_cleanup_uploads_removes_an_inherited_upload_dir(tmp_path):
 
 
 def test_cleanup_uploads_ignores_paths_outside_the_upload_root(tmp_path):
-    from karaoke_maker.web import _cleanup_uploads
+    from songtrace.web import _cleanup_uploads
     cfg = Config(whisper_url="u", work_dir=tmp_path / "work",
                  output_dir=tmp_path / "out")
     outside = tmp_path / "somewhere" / "keep.mp4"
@@ -212,7 +212,7 @@ def test_cleanup_uploads_ignores_paths_outside_the_upload_root(tmp_path):
 
 
 def test_cleanup_uploads_tolerates_a_missing_file(tmp_path):
-    from karaoke_maker.web import _cleanup_uploads
+    from songtrace.web import _cleanup_uploads
     cfg = Config(whisper_url="u", work_dir=tmp_path / "work",
                  output_dir=tmp_path / "out")
     _cleanup_uploads(cfg, "child", cfg.work_dir / "uploads" / "child" / "gone.mp4")
@@ -340,13 +340,13 @@ def test_fonts_are_served(tmp_path):
 
 
 def test_font_licence_is_bundled():
-    from karaoke_maker.web import STATIC
+    from songtrace.web import STATIC
     licence = (STATIC / "fonts" / "OFL.txt").read_text(encoding="utf-8", errors="replace")
     assert "SIL OPEN FONT LICENSE" in licence.upper()
 
 
 def _index_html():
-    from karaoke_maker.web import STATIC
+    from songtrace.web import STATIC
     return (STATIC / "index.html").read_text(encoding="utf-8")
 
 

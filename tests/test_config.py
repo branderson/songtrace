@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from karaoke_maker.config import Config, load_config
+from songtrace.config import Config, load_config
 
 
 def test_load_minimal(tmp_path):

@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from karaoke_maker.config import Config
-from karaoke_maker.lyrics import normalize_lyrics
-from karaoke_maker.pipeline import Ctx, PipelineError, SongInput
-from karaoke_maker.stages import align
+from songtrace.config import Config
+from songtrace.lyrics import normalize_lyrics
+from songtrace.pipeline import Ctx, PipelineError, SongInput
+from songtrace.stages import align
 
 LYRICS = "it's one two three\nfour five six seven eight"
 

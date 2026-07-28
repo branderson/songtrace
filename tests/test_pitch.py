@@ -1,7 +1,7 @@
 import numpy as np
-from karaoke_maker.config import Config
-from karaoke_maker.pipeline import Ctx, SongInput
-from karaoke_maker.stages import pitch
+from songtrace.config import Config
+from songtrace.pipeline import Ctx, SongInput
+from songtrace.stages import pitch
 
 
 def test_pitch_stage_writes_npz(tmp_path, monkeypatch):

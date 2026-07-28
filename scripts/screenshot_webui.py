@@ -15,9 +15,9 @@ import httpx
 import uvicorn
 from playwright.sync_api import sync_playwright
 
-from karaoke_maker.config import Config
-from karaoke_maker.pipeline import PipelineError, PipelineResult
-from karaoke_maker.web import create_app
+from songtrace.config import Config
+from songtrace.pipeline import PipelineError, PipelineResult
+from songtrace.web import create_app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_IMAGE = REPO_ROOT / "docs" / "images" / "webui.png"

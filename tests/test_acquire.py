@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
-from karaoke_maker.config import Config
-from karaoke_maker.pipeline import Ctx, SongInput
-from karaoke_maker.stages import acquire
+from songtrace.config import Config
+from songtrace.pipeline import Ctx, SongInput
+from songtrace.stages import acquire
 
 def make_ctx(tmp_path, **kw):
     inp = SongInput(title="T", artist="A", lyrics_text="x", **kw)
@@ -46,7 +46,7 @@ def test_outputs_are_meta_and_audio(tmp_path):
 
 def test_requires_exactly_one_source(tmp_path):
     import pytest
-    from karaoke_maker.pipeline import PipelineError
+    from songtrace.pipeline import PipelineError
     ctx = make_ctx(tmp_path)
     with pytest.raises(PipelineError):
         acquire.acquire_stage().run(ctx)
@@ -73,7 +73,7 @@ def test_classify_no_thumbnail(tmp_path):
 
 def test_classify_no_video_raises(tmp_path):
     import pytest
-    from karaoke_maker.pipeline import PipelineError
+    from songtrace.pipeline import PipelineError
     (tmp_path / "source_video.jpg").write_bytes(b"t")
     with pytest.raises(PipelineError):
         acquire._classify_downloads(tmp_path)
