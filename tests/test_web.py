@@ -1,5 +1,6 @@
 import io
 import re
+import shutil
 import threading
 import time
 
@@ -776,7 +777,7 @@ def test_rebuild_renames_the_work_dir_on_a_retitle(tmp_path):
     seen = []
     client, cfg = make_client(tmp_path, capture_runner_factory(seen))
     parent = make_done_job(client)
-    (cfg.work_dir / "A - T").mkdir(parents=True)
+    (cfg.work_dir / "A - T").mkdir(parents=True, exist_ok=True)
     (cfg.work_dir / "A - T" / "audio.wav").write_bytes(b"x")
     child = client.post(f"/api/jobs/{parent}/rebuild",
                         data=rebuild_form(title="T2")).json()["id"]
@@ -789,7 +790,7 @@ def test_rebuild_renames_the_work_dir_on_a_retitle(tmp_path):
 def test_rebuild_fails_the_job_on_a_work_dir_collision(tmp_path):
     client, cfg = make_client(tmp_path, ok_runner)
     parent = make_done_job(client)
-    (cfg.work_dir / "A - T").mkdir(parents=True)
+    (cfg.work_dir / "A - T").mkdir(parents=True, exist_ok=True)
     (cfg.work_dir / "A - T2").mkdir(parents=True)
     child = client.post(f"/api/jobs/{parent}/rebuild",
                         data=rebuild_form(title="T2")).json()["id"]
@@ -817,7 +818,7 @@ def test_rebuild_inherits_the_parents_source(tmp_path):
                         files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4")})
     parent = resp.json()["id"]
     wait_status(client, parent, "done")
-    (cfg.work_dir / "A - T").mkdir(parents=True)
+    (cfg.work_dir / "A - T").mkdir(parents=True, exist_ok=True)
     for name in ("meta.json", "audio.wav"):
         (cfg.work_dir / "A - T" / name).write_bytes(b"x")
     child = client.post(f"/api/jobs/{parent}/rebuild",
@@ -1007,7 +1008,7 @@ def test_rebuild_of_a_failed_parent_removes_nothing(tmp_path):
 def test_delete_removes_work_and_output_and_the_job(tmp_path):
     client, cfg = make_client(tmp_path, slug_runner)
     job_id = make_done_job(client)
-    (cfg.work_dir / "A - T").mkdir(parents=True)
+    (cfg.work_dir / "A - T").mkdir(parents=True, exist_ok=True)
     (cfg.work_dir / "A - T" / "audio.wav").write_bytes(b"x")
     assert (cfg.output_dir / "A - T").exists()
 
@@ -1057,3 +1058,51 @@ def test_a_plain_job_never_removes_anything(tmp_path):
     stray.mkdir(parents=True)
     make_done_job(client, title="T2")
     assert stray.exists()
+
+
+def test_discover_jobs_ignores_a_work_dir_without_a_sidecar(tmp_path):
+    from songtrace.web import _discover_jobs
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work", output_dir=tmp_path / "out")
+    (cfg.work_dir / "A - T").mkdir(parents=True)
+    assert _discover_jobs(cfg) == []
+
+
+def test_discover_jobs_reconstructs_a_completed_song(tmp_path):
+    from songtrace.web import _discover_jobs
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work", output_dir=tmp_path / "out")
+    client = TestClient(create_app(cfg, runner=slug_runner))
+    make_done_job(client)
+
+    discovered = _discover_jobs(cfg)
+
+    assert len(discovered) == 1
+    job = discovered[0]
+    assert job.title == "T" and job.artist == "A" and job.status == "done"
+    assert job.output_dir == str(cfg.output_dir / "A - T")
+    assert job.error is None
+
+
+def test_discover_jobs_reconstructs_a_song_whose_output_is_missing_as_failed(tmp_path):
+    from songtrace.web import _discover_jobs
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work", output_dir=tmp_path / "out")
+    client = TestClient(create_app(cfg, runner=slug_runner))
+    make_done_job(client)
+    shutil.rmtree(cfg.output_dir / "A - T")
+
+    discovered = _discover_jobs(cfg)
+
+    assert len(discovered) == 1
+    assert discovered[0].status == "failed"
+    assert discovered[0].error == "interrupted before completion"
+    assert discovered[0].output_dir is None
+
+
+def test_discovered_jobs_are_visible_from_a_fresh_app(tmp_path):
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work", output_dir=tmp_path / "out")
+    client1 = TestClient(create_app(cfg, runner=slug_runner))
+    make_done_job(client1)
+
+    client2 = TestClient(create_app(cfg, runner=slug_runner))
+    jobs = client2.get("/api/jobs").json()
+    assert len(jobs) == 1
+    assert jobs[0]["title"] == "T" and jobs[0]["status"] == "done"

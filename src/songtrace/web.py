@@ -1,3 +1,4 @@
+import json
 import math
 import queue
 import re
@@ -5,7 +6,7 @@ import shutil
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -15,8 +16,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import rebuild as rebuild_policy
 from .config import Config
-from .pipeline import (STAGE_ORDER, PipelineError, SongInput, run_pipeline,
-                       song_slug)
+from .pipeline import (STAGE_ORDER, PipelineError, SongInput, read_warnings,
+                       run_pipeline, song_slug)
 
 STATIC = Path(__file__).parent / "static"
 STAGE_LINE = re.compile(r"^\[(\w+)\] (?:running|cached, skipping)")
@@ -92,6 +93,34 @@ def _cleanup_uploads(cfg: Config, job_id: str, video_path: Path | None) -> None:
             pass
 
 
+def _discover_jobs(cfg: Config) -> list[Job]:
+    discovered = []
+    if not cfg.work_dir.exists():
+        return discovered
+    for sidecar in cfg.work_dir.glob("*/input.json"):
+        try:
+            data = json.loads(sidecar.read_text())
+            for key in ("video_path", "cover_path"):
+                if data.get(key) is not None:
+                    data[key] = Path(data[key])
+            inp = SongInput(**data)
+        except (OSError, ValueError, TypeError):
+            continue
+        slug = song_slug(inp)
+        out = cfg.output_dir / slug
+        done = out.exists() and any(out.iterdir())
+        mtime = sidecar.stat().st_mtime
+        discovered.append(Job(
+            id=uuid.uuid4().hex, title=inp.title, artist=inp.artist, inp=inp,
+            status="done" if done else "failed",
+            output_dir=str(out) if done else None,
+            warnings=read_warnings(sidecar.parent) if done else [],
+            error=None if done else "interrupted before completion",
+            created_at=mtime, finished_at=mtime))
+    discovered.sort(key=lambda j: j.created_at)
+    return discovered
+
+
 def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     app = FastAPI()
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -99,6 +128,10 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     order: list[str] = []
     lock = threading.Lock()
     todo: queue.Queue[str] = queue.Queue()
+
+    for job in _discover_jobs(cfg):
+        jobs[job.id] = job
+        order.append(job.id)
 
     def _prepare_rebuild(job: Job, log) -> str | None:
         """Relocate cached work and report the stage this rebuild restarts from."""
@@ -132,6 +165,15 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         shutil.rmtree(old, ignore_errors=True)
         log(f"[rebuild] removed superseded {old.name}")
 
+    def _write_sidecar(job: Job) -> None:
+        work = cfg.work_dir / song_slug(job.inp)
+        work.mkdir(parents=True, exist_ok=True)
+        data = asdict(job.inp)
+        for key in ("video_path", "cover_path"):
+            if data[key] is not None:
+                data[key] = str(data[key])
+        (work / "input.json").write_text(json.dumps(data))
+
     def worker():
         while True:
             job_id = todo.get()
@@ -148,6 +190,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
             try:
                 force_from = _prepare_rebuild(job, log)
+                _write_sidecar(job)
                 result = runner(job.inp, cfg, log=log, force_from=force_from)
                 with lock:
                     job.output_dir = str(result.output_dir)
