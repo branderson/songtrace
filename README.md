@@ -7,6 +7,8 @@ and a YouTube URL or local video file — into a playable
 [UltraStar](https://usdx.eu/format/)-format song folder. Also compatible with
 [Melody Mania](https://melodymania.org/).
 
+![Web UI](docs/images/webui.png)
+
 The pipeline:
 
 1. **acquire** — download audio/video via `yt-dlp` (or use a local video file)
@@ -69,8 +71,6 @@ docker compose up -d
 The web UI is then at `http://localhost:8000`. Downloaded model weights
 (Demucs, wav2vec2, ...) are cached under `./data` on the host so they survive
 container recreation.
-
-![Web UI](docs/images/webui.png)
 
 Run the CLI inside the container instead of the web UI:
 
