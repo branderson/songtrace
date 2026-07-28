@@ -903,6 +903,59 @@ def test_rebuild_of_an_unknown_job_is_404(tmp_path):
     assert client.post("/api/jobs/nope/rebuild", data=rebuild_form()).status_code == 404
 
 
+def test_rebuild_full_forces_every_stage_from_the_first(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, capture_runner_factory(seen))
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild-full").json()["id"]
+    wait_status(client, child, "done")
+    assert seen[1]["force_from"] == STAGE_ORDER[0]
+    assert seen[1]["inp"] == seen[0]["inp"]
+
+
+def test_rebuild_full_creates_a_linked_job(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    parent = make_done_job(client)
+    resp = client.post(f"/api/jobs/{parent}/rebuild-full")
+    assert resp.status_code == 201
+    child = resp.json()["id"]
+    assert child != parent
+    job = wait_status(client, child, "done")
+    assert job["rebuilt_from"] == parent
+
+
+def test_rebuild_full_logs_that_it_is_a_forced_rebuild(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild-full").json()["id"]
+    job = wait_status(client, child, "done")
+    rebuild_lines = [l for l in job["log"] if l.startswith("[rebuild]")]
+    assert len(rebuild_lines) == 1
+    assert STAGE_ORDER[0] in rebuild_lines[0]
+
+
+def test_rebuild_full_of_an_unknown_job_is_404(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.post("/api/jobs/nope/rebuild-full").status_code == 404
+
+
+def test_rebuild_full_of_a_running_job_is_409(tmp_path):
+    release = threading.Event()
+
+    def blocking(inp, cfg, log=print, force_from=None, stages=None):
+        release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, blocking)
+    parent = client.post("/api/jobs", data=rebuild_form()).json()["id"]
+    try:
+        wait_status(client, parent, "running")
+        assert client.post(f"/api/jobs/{parent}/rebuild-full").status_code == 409
+    finally:
+        release.set()
+    wait_status(client, parent, "done")
+
+
 def slug_runner(inp, cfg, log=print, force_from=None, stages=None):
     out = cfg.output_dir / song_slug(inp)
     out.mkdir(parents=True, exist_ok=True)

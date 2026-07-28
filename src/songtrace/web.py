@@ -35,6 +35,7 @@ class Job:
     error: str | None = None
     inp: SongInput | None = None
     rebuilt_from: str | None = None
+    force_stage: str | None = None
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -101,6 +102,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
     def _prepare_rebuild(job: Job, log) -> str | None:
         """Relocate cached work and report the stage this rebuild restarts from."""
+        if job.force_stage:
+            log(f"[rebuild] restarting from {job.force_stage} (forced rebuild from scratch)")
+            return job.force_stage
         if not job.rebuilt_from:
             return None
         with lock:
@@ -164,10 +168,10 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
     threading.Thread(target=worker, daemon=True).start()
 
-    def _enqueue(job_id: str, inp: SongInput,
-                 rebuilt_from: str | None = None) -> dict:
+    def _enqueue(job_id: str, inp: SongInput, rebuilt_from: str | None = None,
+                 force_stage: str | None = None) -> dict:
         job = Job(id=job_id, title=inp.title, artist=inp.artist, inp=inp,
-                  rebuilt_from=rebuilt_from)
+                  rebuilt_from=rebuilt_from, force_stage=force_stage)
         with lock:
             jobs[job_id] = job
             order.append(job_id)
@@ -215,6 +219,12 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     def rerun(job_id: str):
         parent = _finished_job(job_id)
         return _enqueue(uuid.uuid4().hex, parent.inp, rebuilt_from=job_id)
+
+    @app.post("/api/jobs/{job_id}/rebuild-full", status_code=201)
+    def rebuild_full(job_id: str):
+        parent = _finished_job(job_id)
+        return _enqueue(uuid.uuid4().hex, parent.inp, rebuilt_from=job_id,
+                        force_stage=STAGE_ORDER[0])
 
     def _require_source(parent_inp: SongInput, inp: SongInput,
                         force_from: str | None) -> None:
