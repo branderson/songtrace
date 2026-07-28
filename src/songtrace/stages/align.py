@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from ..lyrics import RefLyrics, alignment_token, normalize_lyrics
+from ..lyrics import alignment_token, normalize_lyrics
 from ..pipeline import Ctx, PipelineError, Stage
 from .transcribe import classify_lyrics_match, load_transcript, lyrics_similarity, vocal_sections
 
