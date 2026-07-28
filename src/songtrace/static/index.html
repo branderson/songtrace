@@ -319,20 +319,23 @@ button { cursor: pointer; }
 }
 #review h3 span { color: var(--text-muted); font-weight: 400; }
 
-#warnings { display: flex; flex-direction: column; gap: 1px; }
-.warn-row {
-  display: grid;
-  grid-template-columns: auto auto 1fr;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+#lyrics-review { display: flex; flex-direction: column; gap: 10px; }
+.review-line { padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); }
+.review-line-text { display: block; font-size: 0.9rem; }
+.review-line-dropped { opacity: 0.55; }
+.review-line-dropped .review-line-text { text-decoration: line-through; }
+.review-line-note { display: block; margin-top: 4px; font-size: 0.72rem; color: var(--text-muted); }
+.review-roll { display: block; width: 100%; height: 20px; margin-top: 6px; }
+.review-note { fill: var(--aqua); }
+.review-note-low { fill: var(--warn); }
+.review-missing {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 0.78rem;
+  color: var(--warn);
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px dashed var(--border);
 }
-.warn-row + .warn-row { margin-top: 6px; }
-.warn-icon { color: var(--warn); }
-.warn-count { font-size: 0.85rem; }
-.warn-range { justify-self: end; font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-muted); }
 
 .review-error { margin: 0 0 14px; font-size: 0.85rem; color: var(--fail); }
 
@@ -534,7 +537,7 @@ button { cursor: pointer; }
     <h3 id="review-title"></h3>
     <p id="review-lineage" hidden></p>
     <p id="review-error" class="review-error" hidden></p>
-    <div id="warnings"><p class="empty-note">no songs queued yet — nothing to review</p></div>
+    <div id="lyrics-review"><p class="empty-note">no songs queued yet — nothing to review</p></div>
     <div id="output-path"></div>
     <div id="review-actions"></div>
     <details>
@@ -572,8 +575,6 @@ let JOBS = [];
 let selectedId = null;
 let STAGES = [];
 let pollTimer = null;
-
-const WARN_RE = /^(\d+)\s+low-confidence notes?\s+near\s+(\d+:\d{2})–(\d+:\d{2})/;
 
 const STATE = {
   queued:  { glyph: "○", cls: "st-queued"  },
@@ -789,8 +790,87 @@ function emptyNote(text) {
   return p;
 }
 
-function renderWarnings(job) {
-  const box = document.getElementById("warnings");
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function fmtTime(t) {
+  const s = Math.round(t);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function missingSpanNode(span) {
+  const p = document.createElement("p");
+  p.className = "review-missing";
+  p.textContent = `♪ unmatched singing, ${fmtTime(span.start)}–${fmtTime(span.end)}`;
+  return p;
+}
+
+function pianoRoll(notes, minPitch, span) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "review-roll");
+  svg.setAttribute("viewBox", "0 0 100 20");
+  svg.setAttribute("preserveAspectRatio", "none");
+  const t0 = notes[0].start;
+  const t1 = Math.max(...notes.map(n => n.end));
+  const dur = Math.max(t1 - t0, 0.001);
+  for (const n of notes) {
+    const rect = document.createElementNS(SVG_NS, "rect");
+    const x = ((n.start - t0) / dur) * 100;
+    const w = Math.max(((n.end - n.start) / dur) * 100, 0.5);
+    const y = 18 - ((n.pitch - minPitch) / span) * 16;
+    rect.setAttribute("x", x.toFixed(2));
+    rect.setAttribute("width", w.toFixed(2));
+    rect.setAttribute("y", y.toFixed(2));
+    rect.setAttribute("height", "2");
+    rect.setAttribute("class", n.low_confidence ? "review-note review-note-low" : "review-note");
+    svg.append(rect);
+  }
+  return svg;
+}
+
+function lineNode(line, minPitch, span) {
+  const row = document.createElement("div");
+  row.className = "review-line" + (line.dropped ? " review-line-dropped" : "");
+  const text = document.createElement("span");
+  text.className = "review-line-text";
+  text.textContent = line.text;
+  row.append(text);
+  if (line.dropped) {
+    const note = document.createElement("span");
+    note.className = "review-line-note";
+    note.textContent = "not sung — dropped";
+    row.append(note);
+    return row;
+  }
+  if (line.notes.length) row.append(pianoRoll(line.notes, minPitch, span));
+  return row;
+}
+
+function buildLyricsReview(data) {
+  const allNotes = data.lines.flatMap(l => l.notes);
+  const pitches = allNotes.map(n => n.pitch);
+  const minPitch = pitches.length ? Math.min(...pitches) : 0;
+  const maxPitch = pitches.length ? Math.max(...pitches) : 0;
+  const span = Math.max(1, maxPitch - minPitch);
+  const spans = [...data.missing_spans].sort((a, b) => a.start - b.start);
+  const nodes = [];
+  let spanIdx = 0;
+  for (const line of data.lines) {
+    const lineStart = line.notes.length ? Math.min(...line.notes.map(n => n.start)) : null;
+    while (spanIdx < spans.length && lineStart !== null && spans[spanIdx].start < lineStart) {
+      nodes.push(missingSpanNode(spans[spanIdx]));
+      spanIdx++;
+    }
+    nodes.push(lineNode(line, minPitch, span));
+  }
+  while (spanIdx < spans.length) {
+    nodes.push(missingSpanNode(spans[spanIdx]));
+    spanIdx++;
+  }
+  return nodes;
+}
+
+async function renderLyricsReview(job) {
+  const box = document.getElementById("lyrics-review");
   if (job.status === "failed") {
     box.replaceChildren(emptyNote("job failed — nothing to review"));
     return;
@@ -799,34 +879,21 @@ function renderWarnings(job) {
     box.replaceChildren(emptyNote("waiting for this song to finish…"));
     return;
   }
-  if (!job.warnings.length) {
-    box.replaceChildren(emptyNote("no low-confidence regions — nothing to review"));
+  if (box.dataset.jobId === job.id) return;
+  const resp = await fetch(`/api/jobs/${job.id}/review`);
+  if (job.id !== selectedId) return;
+  if (!resp.ok) {
+    box.replaceChildren(emptyNote("no review data available"));
     return;
   }
-  const rows = job.warnings.map(w => {
-    const m = WARN_RE.exec(w);
-    const row = document.createElement("div");
-    row.className = "warn-row";
-    if (m) {
-      row.setAttribute("data-count", m[1]);
-      row.setAttribute("data-start", m[2]);
-      row.setAttribute("data-end", m[3]);
-      const icon = document.createElement("span");
-      icon.className = "warn-icon";
-      icon.textContent = "⚠";
-      const count = document.createElement("span");
-      count.className = "warn-count";
-      count.textContent = `${m[1]} note${m[1] === "1" ? "" : "s"}`;
-      const range = document.createElement("span");
-      range.className = "warn-range";
-      range.textContent = `${m[2]}–${m[3]}`;
-      row.append(icon, count, range);
-    } else {
-      row.textContent = w;
-    }
-    return row;
-  });
-  box.replaceChildren(...rows);
+  const data = await resp.json();
+  if (job.id !== selectedId) return;
+  box.dataset.jobId = job.id;
+  if (!data.lines.length) {
+    box.replaceChildren(emptyNote("no lyrics to review"));
+    return;
+  }
+  box.replaceChildren(...buildLyricsReview(data));
 }
 
 async function copyPath(path, button) {
@@ -981,7 +1048,7 @@ async function refreshDetail() {
   reviewTitle.replaceChildren(`${job.title} `, artist);
   reviewError.hidden = !job.error;
   reviewError.textContent = job.error ?? "";
-  renderWarnings(job);
+  renderLyricsReview(job);
   renderOutputPath(job);
   renderLineage(job);
   renderActions(job);

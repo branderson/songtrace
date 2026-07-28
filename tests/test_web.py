@@ -410,10 +410,27 @@ def test_index_respects_reduced_motion():
     assert "prefers-reduced-motion" in _index_html()
 
 
-def test_index_parses_warnings_with_endash():
+def test_index_has_lyrics_review_hook():
     html = _index_html()
-    assert "–" in html, "warning parser must handle the en-dash separator"
-    assert "data-start" in html and "data-end" in html
+    assert 'id="lyrics-review"' in html
+    assert 'id="warnings"' not in html
+
+
+def test_index_review_uses_svg_not_canvas():
+    html = _index_html()
+    assert "createElementNS" in html
+    assert "<canvas" not in html
+
+
+def test_index_review_fetches_review_endpoint():
+    html = _index_html()
+    assert "/review" in html
+
+
+def test_index_lyrics_review_uses_endash_for_time_ranges():
+    html = _index_html()
+    body = _fn_body(html, "missingSpanNode")
+    assert "–" in body
 
 
 def test_index_has_copy_path_control():
