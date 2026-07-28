@@ -40,19 +40,6 @@ Config is TOML. Resolution order:
 2. the `SONGTRACE_CONFIG` environment variable
 3. `~/.config/songtrace/config.toml`
 
-If you used this project under its former name, move your existing config once:
-
-```sh
-pip uninstall karaoke-maker    # removes the old console script
-mv ~/.config/karaoke-maker ~/.config/songtrace
-```
-
-The Docker deployment needs no config migration — the image sets
-`SONGTRACE_CONFIG` itself and the config is bind-mounted to a fixed path.
-Run `docker compose down` before upgrading (or `docker compose up -d
---remove-orphans`) since the service key changed and Compose won't replace
-the old container in place.
-
 Copy the example and fill in your Whisper server:
 
 ```sh
