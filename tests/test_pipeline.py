@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from songtrace.config import Config
-from songtrace.pipeline import SongInput, Stage, run_pipeline, song_slug
+from songtrace.pipeline import SongInput, Stage, read_warnings, run_pipeline, song_slug
 
 def make_cfg(tmp_path):
     return Config(whisper_url="http://x/v1", output_dir=tmp_path / "out",
@@ -46,3 +46,10 @@ def test_warnings_surfaced(tmp_path):
     st = Stage(name="n", outputs=lambda ctx: [ctx.work / "n.done"], run=run)
     result = run_pipeline(inp, cfg, log=lambda m: None, stages=[st])
     assert result.warnings == ["w1"]
+
+def test_read_warnings_is_empty_without_a_notes_file(tmp_path):
+    assert read_warnings(tmp_path) == []
+
+def test_read_warnings_reads_the_notes_file(tmp_path):
+    (tmp_path / "notes_sec.json").write_text(json.dumps({"warnings": ["w1", "w2"]}))
+    assert read_warnings(tmp_path) == ["w1", "w2"]

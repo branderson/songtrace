@@ -45,6 +45,12 @@ def song_slug(inp: SongInput) -> str:
     name = f"{inp.artist} - {inp.title}"
     return name.replace("/", "").replace("\0", "")
 
+def read_warnings(work: Path) -> list[str]:
+    notes_file = work / "notes_sec.json"
+    if not notes_file.exists():
+        return []
+    return json.loads(notes_file.read_text()).get("warnings", [])
+
 def _real_stages() -> list[Stage]:
     from . import stages
     return stages.all_stages()
@@ -69,8 +75,5 @@ def run_pipeline(inp: SongInput, cfg: Config, log=print,
             continue
         log(f"[{stage.name}] running")
         stage.run(ctx)
-    warnings = []
-    notes_file = work / "notes_sec.json"
-    if notes_file.exists():
-        warnings = json.loads(notes_file.read_text()).get("warnings", [])
-    return PipelineResult(output_dir=cfg.output_dir / song_slug(inp), warnings=warnings)
+    return PipelineResult(output_dir=cfg.output_dir / song_slug(inp),
+                          warnings=read_warnings(work))

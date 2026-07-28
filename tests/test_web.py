@@ -1,6 +1,7 @@
 import io
 import json
 import re
+import shutil
 import threading
 import time
 
@@ -601,6 +602,44 @@ def _rebuild_flaws(html):
     return flaws
 
 
+def _rebuild_full_and_delete_flaws(html):
+    flaws = []
+    actions = _fn_body(html, "renderActions")
+    for action in ('"rebuild-full"', '"delete"'):
+        if action not in actions:
+            flaws.append(f"{action} is not offered from renderActions")
+
+    rf = _fn_body(html, "rebuildFullJob")
+    if "/rebuild-full" not in rf or 'method: "POST"' not in rf:
+        flaws.append("rebuildFullJob does not POST to /rebuild-full")
+
+    d = _fn_body(html, "deleteJob")
+    confirm_idx = d.find("confirm(")
+    fetch_idx = d.find("fetch(")
+    if confirm_idx == -1:
+        flaws.append("deleteJob does not confirm before deleting")
+    elif fetch_idx != -1 and confirm_idx > fetch_idx:
+        flaws.append("deleteJob fetches before confirming")
+    if 'method: "DELETE"' not in d:
+        flaws.append("deleteJob does not send a DELETE request")
+    return flaws
+
+
+def test_rebuild_full_and_delete_controls_are_wired_up():
+    assert _rebuild_full_and_delete_flaws(_index_html()) == []
+
+
+def _empty_state_flaws(html):
+    refresh = _fn_body(html, "refreshJobs")
+    if "clearDetail()" not in refresh:
+        return ["refreshJobs never resets the panel when no job is selected"]
+    return []
+
+
+def test_review_panel_resets_when_no_job_is_selected():
+    assert _empty_state_flaws(_index_html()) == []
+
+
 # each mutation is a plausible regression; the checker above must reject all of them
 MUTATIONS = [
     (_focus_flaws, "queue: card moved unconditionally",
@@ -629,6 +668,14 @@ MUTATIONS = [
     (_rebuild_flaws, "rebuild: action row rebuilt on every poll",
      "if (reviewActions.dataset.jobId === job.id && shown.join() === wanted.join()) return;",
      ""),
+    (_rebuild_full_and_delete_flaws, "delete: confirmation dialog removed",
+     'if (!confirm("Delete this song? This removes all its files and cannot be undone.")) return;',
+     ""),
+    (_rebuild_full_and_delete_flaws, "rebuild-full: no longer offered on a done job",
+     '["edit", "rebuild-full", "delete"]', '["edit", "delete"]'),
+    (_empty_state_flaws, "empty state: clearDetail no longer wired into refreshJobs",
+     "if (selectedId) refreshDetail();\n  else clearDetail();",
+     "if (selectedId) refreshDetail();"),
 ]
 
 
@@ -846,7 +893,7 @@ def test_rebuild_renames_the_work_dir_on_a_retitle(tmp_path):
     seen = []
     client, cfg = make_client(tmp_path, capture_runner_factory(seen))
     parent = make_done_job(client)
-    (cfg.work_dir / "A - T").mkdir(parents=True)
+    (cfg.work_dir / "A - T").mkdir(parents=True, exist_ok=True)
     (cfg.work_dir / "A - T" / "audio.wav").write_bytes(b"x")
     child = client.post(f"/api/jobs/{parent}/rebuild",
                         data=rebuild_form(title="T2")).json()["id"]
@@ -859,7 +906,7 @@ def test_rebuild_renames_the_work_dir_on_a_retitle(tmp_path):
 def test_rebuild_fails_the_job_on_a_work_dir_collision(tmp_path):
     client, cfg = make_client(tmp_path, ok_runner)
     parent = make_done_job(client)
-    (cfg.work_dir / "A - T").mkdir(parents=True)
+    (cfg.work_dir / "A - T").mkdir(parents=True, exist_ok=True)
     (cfg.work_dir / "A - T2").mkdir(parents=True)
     child = client.post(f"/api/jobs/{parent}/rebuild",
                         data=rebuild_form(title="T2")).json()["id"]
@@ -887,7 +934,7 @@ def test_rebuild_inherits_the_parents_source(tmp_path):
                         files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4")})
     parent = resp.json()["id"]
     wait_status(client, parent, "done")
-    (cfg.work_dir / "A - T").mkdir(parents=True)
+    (cfg.work_dir / "A - T").mkdir(parents=True, exist_ok=True)
     for name in ("meta.json", "audio.wav"):
         (cfg.work_dir / "A - T" / name).write_bytes(b"x")
     child = client.post(f"/api/jobs/{parent}/rebuild",
@@ -973,6 +1020,59 @@ def test_rebuild_of_an_unknown_job_is_404(tmp_path):
     assert client.post("/api/jobs/nope/rebuild", data=rebuild_form()).status_code == 404
 
 
+def test_rebuild_full_forces_every_stage_from_the_first(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, capture_runner_factory(seen))
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild-full").json()["id"]
+    wait_status(client, child, "done")
+    assert seen[1]["force_from"] == STAGE_ORDER[0]
+    assert seen[1]["inp"] == seen[0]["inp"]
+
+
+def test_rebuild_full_creates_a_linked_job(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    parent = make_done_job(client)
+    resp = client.post(f"/api/jobs/{parent}/rebuild-full")
+    assert resp.status_code == 201
+    child = resp.json()["id"]
+    assert child != parent
+    job = wait_status(client, child, "done")
+    assert job["rebuilt_from"] == parent
+
+
+def test_rebuild_full_logs_that_it_is_a_forced_rebuild(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild-full").json()["id"]
+    job = wait_status(client, child, "done")
+    rebuild_lines = [l for l in job["log"] if l.startswith("[rebuild]")]
+    assert len(rebuild_lines) == 1
+    assert STAGE_ORDER[0] in rebuild_lines[0]
+
+
+def test_rebuild_full_of_an_unknown_job_is_404(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.post("/api/jobs/nope/rebuild-full").status_code == 404
+
+
+def test_rebuild_full_of_a_running_job_is_409(tmp_path):
+    release = threading.Event()
+
+    def blocking(inp, cfg, log=print, force_from=None, stages=None):
+        release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, blocking)
+    parent = client.post("/api/jobs", data=rebuild_form()).json()["id"]
+    try:
+        wait_status(client, parent, "running")
+        assert client.post(f"/api/jobs/{parent}/rebuild-full").status_code == 409
+    finally:
+        release.set()
+    wait_status(client, parent, "done")
+
+
 def slug_runner(inp, cfg, log=print, force_from=None, stages=None):
     out = cfg.output_dir / song_slug(inp)
     out.mkdir(parents=True, exist_ok=True)
@@ -1021,6 +1121,76 @@ def test_rebuild_of_a_failed_parent_removes_nothing(tmp_path):
     assert (cfg.output_dir / "A - T" / "keep.txt").exists()
 
 
+def test_delete_removes_work_and_output_and_the_job(tmp_path):
+    client, cfg = make_client(tmp_path, slug_runner)
+    job_id = make_done_job(client)
+    (cfg.work_dir / "A - T").mkdir(parents=True, exist_ok=True)
+    (cfg.work_dir / "A - T" / "audio.wav").write_bytes(b"x")
+    assert (cfg.output_dir / "A - T").exists()
+
+    resp = client.delete(f"/api/jobs/{job_id}")
+
+    assert resp.status_code == 204
+    assert not (cfg.work_dir / "A - T").exists()
+    assert not (cfg.output_dir / "A - T").exists()
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+    assert job_id not in [j["id"] for j in client.get("/api/jobs").json()]
+
+
+def test_delete_tolerates_a_work_dir_that_is_already_gone(tmp_path):
+    client, cfg = make_client(tmp_path, slug_runner)
+    job_id = make_done_job(client)
+    shutil.rmtree(cfg.work_dir / "A - T")
+    resp = client.delete(f"/api/jobs/{job_id}")
+    assert resp.status_code == 204
+
+
+def test_delete_of_an_unknown_job_is_404(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.delete("/api/jobs/nope").status_code == 404
+
+
+def test_delete_of_a_running_job_is_409(tmp_path):
+    release = threading.Event()
+
+    def blocking(inp, cfg, log=print, force_from=None, stages=None):
+        release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, blocking)
+    parent = client.post("/api/jobs", data=rebuild_form()).json()["id"]
+    try:
+        wait_status(client, parent, "running")
+        assert client.delete(f"/api/jobs/{parent}").status_code == 409
+    finally:
+        release.set()
+    wait_status(client, parent, "done")
+    assert client.get(f"/api/jobs/{parent}").status_code == 200
+
+
+def test_delete_of_a_job_with_an_active_rebuild_is_409(tmp_path):
+    """A done job's slug must not be deleted out from under a rebuild in flight."""
+    release = threading.Event()
+    calls = []
+
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        calls.append(1)
+        if len(calls) > 1:
+            release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, runner)
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild-full").json()["id"]
+    try:
+        wait_status(client, child, "running")
+        assert client.delete(f"/api/jobs/{parent}").status_code == 409
+    finally:
+        release.set()
+    wait_status(client, child, "done")
+    assert client.get(f"/api/jobs/{parent}").status_code == 200
+
+
 def test_a_plain_job_never_removes_anything(tmp_path):
     client, cfg = make_client(tmp_path, slug_runner)
     make_done_job(client)
@@ -1028,6 +1198,54 @@ def test_a_plain_job_never_removes_anything(tmp_path):
     stray.mkdir(parents=True)
     make_done_job(client, title="T2")
     assert stray.exists()
+
+
+def test_discover_jobs_ignores_a_work_dir_without_a_sidecar(tmp_path):
+    from songtrace.web import _discover_jobs
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work", output_dir=tmp_path / "out")
+    (cfg.work_dir / "A - T").mkdir(parents=True)
+    assert _discover_jobs(cfg) == []
+
+
+def test_discover_jobs_reconstructs_a_completed_song(tmp_path):
+    from songtrace.web import _discover_jobs
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work", output_dir=tmp_path / "out")
+    client = TestClient(create_app(cfg, runner=slug_runner))
+    make_done_job(client)
+
+    discovered = _discover_jobs(cfg)
+
+    assert len(discovered) == 1
+    job = discovered[0]
+    assert job.title == "T" and job.artist == "A" and job.status == "done"
+    assert job.output_dir == str(cfg.output_dir / "A - T")
+    assert job.error is None
+
+
+def test_discover_jobs_reconstructs_a_song_whose_output_is_missing_as_failed(tmp_path):
+    from songtrace.web import _discover_jobs
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work", output_dir=tmp_path / "out")
+    client = TestClient(create_app(cfg, runner=slug_runner))
+    make_done_job(client)
+    shutil.rmtree(cfg.output_dir / "A - T")
+
+    discovered = _discover_jobs(cfg)
+
+    assert len(discovered) == 1
+    assert discovered[0].status == "failed"
+    assert discovered[0].error == "interrupted before completion"
+    assert discovered[0].output_dir is None
+
+
+def test_discovered_jobs_are_visible_from_a_fresh_app(tmp_path):
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work", output_dir=tmp_path / "out")
+    client1 = TestClient(create_app(cfg, runner=slug_runner))
+    make_done_job(client1)
+
+    client2 = TestClient(create_app(cfg, runner=slug_runner))
+    jobs = client2.get("/api/jobs").json()
+    assert len(jobs) == 1
+    assert jobs[0]["title"] == "T" and jobs[0]["status"] == "done"
 
 
 def review_runner_factory(notes, dropped_lines=None, missing_spans=None, warnings=None,

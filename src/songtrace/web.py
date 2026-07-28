@@ -6,7 +6,7 @@ import shutil
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -17,8 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from . import rebuild as rebuild_policy
 from .config import Config
 from .lyrics import normalize_lyrics
-from .pipeline import (STAGE_ORDER, PipelineError, SongInput, run_pipeline,
-                       song_slug)
+from .pipeline import (STAGE_ORDER, PipelineError, SongInput, read_warnings,
+                       run_pipeline, song_slug)
 
 STATIC = Path(__file__).parent / "static"
 STAGE_LINE = re.compile(r"^\[(\w+)\] (?:running|cached, skipping)")
@@ -37,6 +37,7 @@ class Job:
     error: str | None = None
     inp: SongInput | None = None
     rebuilt_from: str | None = None
+    force_stage: str | None = None
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -93,6 +94,35 @@ def _cleanup_uploads(cfg: Config, job_id: str, video_path: Path | None) -> None:
             pass
 
 
+def _discover_jobs(cfg: Config) -> list[Job]:
+    discovered = []
+    if not cfg.work_dir.exists():
+        return discovered
+    for sidecar in cfg.work_dir.glob("*/input.json"):
+        try:
+            data = json.loads(sidecar.read_text())
+            for key in ("video_path", "cover_path"):
+                if data.get(key) is not None:
+                    data[key] = Path(data[key])
+            inp = SongInput(**data)
+            slug = song_slug(inp)
+            out = cfg.output_dir / slug
+            done = out.exists() and any(out.iterdir())
+            mtime = sidecar.stat().st_mtime
+            warnings = read_warnings(sidecar.parent) if done else []
+        except (OSError, ValueError, TypeError):
+            continue
+        discovered.append(Job(
+            id=uuid.uuid4().hex, title=inp.title, artist=inp.artist, inp=inp,
+            status="done" if done else "failed",
+            output_dir=str(out) if done else None,
+            warnings=warnings,
+            error=None if done else "interrupted before completion",
+            created_at=mtime, finished_at=mtime))
+    discovered.sort(key=lambda j: j.created_at)
+    return discovered
+
+
 def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     app = FastAPI()
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -101,8 +131,15 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     lock = threading.Lock()
     todo: queue.Queue[str] = queue.Queue()
 
+    for job in _discover_jobs(cfg):
+        jobs[job.id] = job
+        order.append(job.id)
+
     def _prepare_rebuild(job: Job, log) -> str | None:
         """Relocate cached work and report the stage this rebuild restarts from."""
+        if job.force_stage:
+            log(f"[rebuild] restarting from {job.force_stage} (forced rebuild from scratch)")
+            return job.force_stage
         if not job.rebuilt_from:
             return None
         with lock:
@@ -130,6 +167,15 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         shutil.rmtree(old, ignore_errors=True)
         log(f"[rebuild] removed superseded {old.name}")
 
+    def _write_sidecar(job: Job) -> None:
+        work = cfg.work_dir / song_slug(job.inp)
+        work.mkdir(parents=True, exist_ok=True)
+        data = asdict(job.inp)
+        for key in ("video_path", "cover_path"):
+            if data[key] is not None:
+                data[key] = str(data[key])
+        (work / "input.json").write_text(json.dumps(data))
+
     def worker():
         while True:
             job_id = todo.get()
@@ -146,6 +192,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
             try:
                 force_from = _prepare_rebuild(job, log)
+                _write_sidecar(job)
                 result = runner(job.inp, cfg, log=log, force_from=force_from)
                 with lock:
                     job.output_dir = str(result.output_dir)
@@ -166,10 +213,10 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
     threading.Thread(target=worker, daemon=True).start()
 
-    def _enqueue(job_id: str, inp: SongInput,
-                 rebuilt_from: str | None = None) -> dict:
+    def _enqueue(job_id: str, inp: SongInput, rebuilt_from: str | None = None,
+                 force_stage: str | None = None) -> dict:
         job = Job(id=job_id, title=inp.title, artist=inp.artist, inp=inp,
-                  rebuilt_from=rebuilt_from)
+                  rebuilt_from=rebuilt_from, force_stage=force_stage)
         with lock:
             jobs[job_id] = job
             order.append(job_id)
@@ -217,6 +264,12 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     def rerun(job_id: str):
         parent = _finished_job(job_id)
         return _enqueue(uuid.uuid4().hex, parent.inp, rebuilt_from=job_id)
+
+    @app.post("/api/jobs/{job_id}/rebuild-full", status_code=201)
+    def rebuild_full(job_id: str):
+        parent = _finished_job(job_id)
+        return _enqueue(uuid.uuid4().hex, parent.inp, rebuilt_from=job_id,
+                        force_stage=STAGE_ORDER[0])
 
     def _require_source(parent_inp: SongInput, inp: SongInput,
                         force_from: str | None) -> None:
@@ -304,6 +357,24 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 "language": inp.language, "bpm": inp.bpm_override,
                 "video_filename": inp.video_path.name if inp.video_path else None,
                 "cover_filename": inp.cover_path.name if inp.cover_path else None}
+
+    @app.delete("/api/jobs/{job_id}", status_code=204)
+    def delete_job(job_id: str):
+        with lock:
+            job = jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404)
+            if job.status in ("queued", "running"):
+                raise HTTPException(409, "job is still in progress")
+            slug = song_slug(job.inp)
+            if any(other.status in ("queued", "running") and song_slug(other.inp) == slug
+                   for other_id, other in jobs.items() if other_id != job_id):
+                raise HTTPException(409, "another job for this song is in progress")
+            jobs.pop(job_id, None)
+            if job_id in order:
+                order.remove(job_id)
+        shutil.rmtree(cfg.work_dir / slug, ignore_errors=True)
+        shutil.rmtree(cfg.output_dir / slug, ignore_errors=True)
 
     @app.get("/api/jobs/{job_id}/review")
     def get_review(job_id: str):
