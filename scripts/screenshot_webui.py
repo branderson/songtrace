@@ -84,7 +84,7 @@ SONGS = [
     ("Time Escaping", "Big Thief", "running", {}),
     ("Vampire in the Corner", "Magdalena Bay", "queued", {}),
 ]
-SELECTED = "Pink Moon"
+SELECTED = "Greensleeves"
 
 running_event = threading.Event()
 
