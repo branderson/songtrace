@@ -1,4 +1,5 @@
 import io
+import json
 import re
 import threading
 import time
@@ -984,3 +985,85 @@ def test_a_plain_job_never_removes_anything(tmp_path):
     stray.mkdir(parents=True)
     make_done_job(client, title="T2")
     assert stray.exists()
+
+
+def review_runner_factory(notes, dropped_lines=None, missing_spans=None, warnings=None):
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        work = cfg.work_dir / song_slug(inp)
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "notes_sec.json").write_text(json.dumps({
+            "notes": notes, "breaks": [], "warnings": warnings or []}))
+        if dropped_lines is not None or missing_spans is not None:
+            (work / "align_meta.json").write_text(json.dumps({
+                "dropped_lines": dropped_lines or [],
+                "missing_spans": missing_spans or []}))
+        out = cfg.output_dir / song_slug(inp)
+        out.mkdir(parents=True, exist_ok=True)
+        return PipelineResult(output_dir=out, warnings=warnings or [])
+    return runner
+
+
+def test_review_endpoint_groups_notes_by_line(tmp_path):
+    notes = [
+        {"start": 1.0, "duration": 0.4, "pitch": 0, "text": "hi",
+         "low_confidence": False, "line_index": 0},
+        {"start": 5.0, "duration": 0.3, "pitch": 2, "text": "there",
+         "low_confidence": True, "line_index": 1},
+    ]
+    client, _ = make_client(tmp_path, review_runner_factory(
+        notes, dropped_lines=[2], missing_spans=[[8.0, 9.5]]))
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "hi\nthere\ngone",
+        "youtube_url": "http://y"})
+    job_id = resp.json()["id"]
+    wait_status(client, job_id, "done")
+    body = client.get(f"/api/jobs/{job_id}/review").json()
+    assert body["lines"] == [
+        {"index": 0, "text": "hi", "dropped": False,
+         "notes": [{"start": 1.0, "end": 1.4, "pitch": 0, "low_confidence": False}]},
+        {"index": 1, "text": "there", "dropped": False,
+         "notes": [{"start": 5.0, "end": 5.3, "pitch": 2, "low_confidence": True}]},
+        {"index": 2, "text": "gone", "dropped": True, "notes": []},
+    ]
+    assert body["missing_spans"] == [{"start": 8.0, "end": 9.5}]
+
+
+def test_review_of_a_failed_job_is_404(tmp_path):
+    def bad_runner(*a, **kw):
+        raise PipelineError("boom")
+    client, _ = make_client(tmp_path, bad_runner)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"})
+    job_id = resp.json()["id"]
+    wait_status(client, job_id, "failed")
+    assert client.get(f"/api/jobs/{job_id}/review").status_code == 404
+
+
+def test_review_of_a_running_job_is_409(tmp_path):
+    release = threading.Event()
+
+    def blocking(inp, cfg, log=print, force_from=None, stages=None):
+        release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, blocking)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"})
+    job_id = resp.json()["id"]
+    try:
+        wait_status(client, job_id, "running")
+        assert client.get(f"/api/jobs/{job_id}/review").status_code == 409
+    finally:
+        release.set()
+    wait_status(client, job_id, "done")
+
+
+def test_review_of_an_unknown_job_is_404(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.get("/api/jobs/nope/review").status_code == 404
+
+
+def test_review_missing_when_pipeline_never_wrote_notes(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    job_id = make_done_job(client)
+    assert client.get(f"/api/jobs/{job_id}/review").status_code == 404

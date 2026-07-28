@@ -1,3 +1,4 @@
+import json
 import math
 import queue
 import re
@@ -15,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import rebuild as rebuild_policy
 from .config import Config
+from .lyrics import normalize_lyrics
 from .pipeline import (STAGE_ORDER, PipelineError, SongInput, run_pipeline,
                        song_slug)
 
@@ -302,6 +304,32 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 "language": inp.language, "bpm": inp.bpm_override,
                 "video_filename": inp.video_path.name if inp.video_path else None,
                 "cover_filename": inp.cover_path.name if inp.cover_path else None}
+
+    @app.get("/api/jobs/{job_id}/review")
+    def get_review(job_id: str):
+        job = _finished_job(job_id)
+        if job.status != "done":
+            raise HTTPException(404)
+        work = cfg.work_dir / song_slug(job.inp)
+        notes_file = work / "notes_sec.json"
+        if not notes_file.exists():
+            raise HTTPException(404)
+        notes_data = json.loads(notes_file.read_text())
+        meta_file = work / "align_meta.json"
+        meta = json.loads(meta_file.read_text()) if meta_file.exists() else {}
+        dropped = set(meta.get("dropped_lines", []))
+        missing_spans = [{"start": s, "end": e}
+                         for s, e in meta.get("missing_spans", [])]
+        ref = normalize_lyrics(job.inp.lyrics_text)
+        by_line: dict[int, list] = {}
+        for n in notes_data["notes"]:
+            by_line.setdefault(n["line_index"], []).append({
+                "start": n["start"], "end": n["start"] + n["duration"],
+                "pitch": n["pitch"], "low_confidence": n["low_confidence"]})
+        lines = [{"index": i, "text": " ".join(words), "dropped": i in dropped,
+                  "notes": by_line.get(i, [])}
+                 for i, words in enumerate(ref.lines)]
+        return {"lines": lines, "missing_spans": missing_spans}
 
     return app
 
