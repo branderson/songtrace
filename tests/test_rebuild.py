@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from karaoke_maker.config import Config
-from karaoke_maker.pipeline import STAGE_ORDER, PipelineError, SongInput
-from karaoke_maker.rebuild import (FIELD_STAGE, changed_fields, plan,
+from songtrace.config import Config
+from songtrace.pipeline import STAGE_ORDER, PipelineError, SongInput
+from songtrace.rebuild import (FIELD_STAGE, changed_fields, plan,
                                    relocate_work, superseded_output)
 
 

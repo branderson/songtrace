@@ -1,5 +1,5 @@
 services:
-  karaoke-maker:
+  songtrace:
     build: .
     ports:
       - "8000:8000"

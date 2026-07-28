@@ -1,7 +1,7 @@
 import numpy as np
 import soundfile as sf
 
-from karaoke_maker.audio_io import load_wav
+from songtrace.audio_io import load_wav
 
 
 def test_load_wav_mono(tmp_path):

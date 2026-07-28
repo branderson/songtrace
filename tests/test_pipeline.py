@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
-from karaoke_maker.config import Config
-from karaoke_maker.pipeline import SongInput, Stage, run_pipeline, song_slug
+from songtrace.config import Config
+from songtrace.pipeline import SongInput, Stage, run_pipeline, song_slug
 
 def make_cfg(tmp_path):
     return Config(whisper_url="http://x/v1", output_dir=tmp_path / "out",

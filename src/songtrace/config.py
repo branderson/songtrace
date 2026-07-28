@@ -12,7 +12,7 @@ class Config:
     whisper_api: str = "openai"
     output_dir: Path = Path("output")
     work_dir: Path = Path("work")
-    creator: str = "karaoke-maker"
+    creator: str = "songtrace"
     demucs_model: str = "htdemucs_ft"
     crepe_model: str = "full"
     device: str = "cuda"
@@ -25,8 +25,8 @@ _PATH_FIELDS = {"output_dir", "work_dir"}
 
 def load_config(path: Path | None = None) -> Config:
     if path is None:
-        env = os.environ.get("KARAOKE_MAKER_CONFIG")
-        path = Path(env) if env else Path.home() / ".config/karaoke-maker/config.toml"
+        env = os.environ.get("SONGTRACE_CONFIG")
+        path = Path(env) if env else Path.home() / ".config/songtrace/config.toml"
     data = tomllib.loads(Path(path).read_text())
     known = {f.name for f in fields(Config)}
     unknown = set(data) - known

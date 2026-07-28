@@ -1,7 +1,7 @@
 import httpx
 from pathlib import Path
-from karaoke_maker.config import Config
-from karaoke_maker.whisper_client import TranscriptSegment, transcribe
+from songtrace.config import Config
+from songtrace.whisper_client import TranscriptSegment, transcribe
 
 def test_transcribe_parses_segments(tmp_path):
     audio = tmp_path / "v.wav"

@@ -1,5 +1,5 @@
 from pathlib import Path
-from karaoke_maker.ultrastar import (
+from songtrace.ultrastar import (
     Note, LineBreak, parse_ultrastar, serialize_ultrastar,
     get_header, format_bpm, parse_bpm,
 )

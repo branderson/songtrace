@@ -2,13 +2,13 @@ import json
 
 import numpy as np
 import pytest
-from karaoke_maker.config import Config
-from karaoke_maker.notes import (
+from songtrace.config import Config
+from songtrace.notes import (
     MIN_NOTE_SEC, TimedNote, build_notes, hz_to_ultrastar, segment_span,
     syllabify,
 )
-from karaoke_maker.pipeline import Ctx, SongInput
-from karaoke_maker.stages import all_stages, notes as notes_stage_mod
+from songtrace.pipeline import Ctx, SongInput
+from songtrace.stages import all_stages, notes as notes_stage_mod
 
 
 def flat_pitch(duration=10.0, hz=261.63):   # C4

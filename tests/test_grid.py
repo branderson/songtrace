@@ -2,11 +2,11 @@ import json
 
 import numpy as np
 import pytest
-from karaoke_maker.config import Config
-from karaoke_maker.grid import scale_bpm, to_ultrastar
-from karaoke_maker.pipeline import Ctx, PipelineError, SongInput
-from karaoke_maker.stages import all_stages, grid as grid_stage_mod
-from karaoke_maker.ultrastar import (
+from songtrace.config import Config
+from songtrace.grid import scale_bpm, to_ultrastar
+from songtrace.pipeline import Ctx, PipelineError, SongInput
+from songtrace.stages import all_stages, grid as grid_stage_mod
+from songtrace.ultrastar import (
     LineBreak, Note, get_header, parse_ultrastar,
 )
 

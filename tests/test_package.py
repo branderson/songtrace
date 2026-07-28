@@ -4,12 +4,12 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from karaoke_maker.config import Config
-from karaoke_maker.pipeline import (
+from songtrace.config import Config
+from songtrace.pipeline import (
     STAGE_ORDER, Ctx, PipelineError, SongInput, run_pipeline, song_slug,
 )
-from karaoke_maker.stages import all_stages, package
-from karaoke_maker.ultrastar import get_header, parse_ultrastar
+from songtrace.stages import all_stages, package
+from songtrace.ultrastar import get_header, parse_ultrastar
 
 SONG_TXT = ("#TITLE:T\n#ARTIST:A\n#MP3:A - T.mp3\n#COVER:A - T.jpg\n"
             "#VIDEO:A - T.webm\n#BPM:200\n#GAP:0\n: 0 1 0 la\nE\n")
