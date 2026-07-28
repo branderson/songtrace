@@ -1,4 +1,5 @@
 import io
+import json
 import re
 import shutil
 import threading
@@ -360,6 +361,32 @@ def test_index_has_required_hooks():
         assert f'name="{name}"' in html, name
 
 
+def test_video_source_fields_are_outside_advanced_details():
+    html = _index_html()
+    form_start = html.index('id="song-form"')
+    details_start = html.index("<details>", form_start)
+    before = html[form_start:details_start]
+    assert 'name="youtube_url"' in before
+    assert 'name="video"' in before
+    after = html[details_start:]
+    for name in ("genre", "year", "language", "bpm", "cover"):
+        assert f'name="{name}"' in after
+
+
+def test_song_form_lyrics_uses_a_two_column_grid():
+    css = _page_css(_index_html())
+    assert re.search(r"\.song-form-grid\s*\{[^}]*grid-template-columns:\s*1fr 1fr",
+                     css, re.S)
+
+
+def test_song_form_grid_stacks_on_narrow_screens():
+    css = _page_css(_index_html())
+    assert re.search(
+        r"@media \(max-width: 720px\)\s*\{[^}]*\.song-form-grid\s*\{[^}]*"
+        r"grid-template-columns:\s*1fr\s*;",
+        css, re.S)
+
+
 def test_index_makes_no_external_requests():
     import re as _re
     html = _index_html()
@@ -384,10 +411,53 @@ def test_index_respects_reduced_motion():
     assert "prefers-reduced-motion" in _index_html()
 
 
-def test_index_parses_warnings_with_endash():
+def test_index_has_lyrics_review_hook():
     html = _index_html()
-    assert "–" in html, "warning parser must handle the en-dash separator"
-    assert "data-start" in html and "data-end" in html
+    assert 'id="lyrics-review"' in html
+    assert 'id="warnings"' not in html
+
+
+def test_index_review_uses_svg_not_canvas():
+    html = _index_html()
+    assert "createElementNS" in html
+    assert "<canvas" not in html
+
+
+def test_index_review_fetches_review_endpoint():
+    html = _index_html()
+    assert "/review" in html
+
+
+def test_index_lyrics_review_uses_endash_for_time_ranges():
+    html = _index_html()
+    body = _fn_body(html, "missingSpanNode")
+    assert "–" in body
+
+
+def test_index_review_lays_out_words_in_time():
+    """Words must be positioned by their sung timing (percentage-based), not
+    packed as plain flow text, so notes can line up under their own word."""
+    html = _index_html()
+    body = _fn_body(html, "lineTimeline")
+    assert "review-word" in body
+    assert "style.left" in body
+
+
+def test_lyrics_review_cache_clears_on_job_status_change():
+    """Regression: switching between done/failed/running jobs must clear the
+    cache so a previously-viewed done job re-fetches when re-selected."""
+    html = _index_html()
+    body = _fn_body(html, "renderLyricsReview")
+    # The "failed" branch must clear the cache before rendering the placeholder
+    assert re.search(
+        r'if\s*\(\s*job\.status\s*===\s*"failed"\s*\)\s*\{[^}]*'
+        r'delete\s+box\.dataset\.jobId',
+        body, re.S), "failed branch must delete cache key"
+    # The "not done" (queued/running) branch must clear the cache before rendering
+    assert re.search(
+        r'if\s*\(\s*job\.status\s*!==\s*"done"\s*\)\s*\{[^}]*'
+        r'delete\s+box\.dataset\.jobId',
+        body, re.S), "not done branch must delete cache key"
 
 
 def test_index_has_copy_path_control():
@@ -1176,3 +1246,115 @@ def test_discovered_jobs_are_visible_from_a_fresh_app(tmp_path):
     jobs = client2.get("/api/jobs").json()
     assert len(jobs) == 1
     assert jobs[0]["title"] == "T" and jobs[0]["status"] == "done"
+
+
+def review_runner_factory(notes, dropped_lines=None, missing_spans=None, warnings=None,
+                          words=None):
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        work = cfg.work_dir / song_slug(inp)
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "notes_sec.json").write_text(json.dumps({
+            "notes": notes, "breaks": [], "warnings": warnings or []}))
+        if dropped_lines is not None or missing_spans is not None:
+            (work / "align_meta.json").write_text(json.dumps({
+                "dropped_lines": dropped_lines or [],
+                "missing_spans": missing_spans or []}))
+        if words is not None:
+            (work / "alignment.json").write_text(json.dumps(words))
+        out = cfg.output_dir / song_slug(inp)
+        out.mkdir(parents=True, exist_ok=True)
+        return PipelineResult(output_dir=out, warnings=warnings or [])
+    return runner
+
+
+def test_review_endpoint_groups_notes_by_line(tmp_path):
+    notes = [
+        {"start": 1.0, "duration": 0.4, "pitch": 0, "text": "hi",
+         "low_confidence": False, "line_index": 0},
+        {"start": 5.0, "duration": 0.3, "pitch": 2, "text": "there",
+         "low_confidence": True, "line_index": 1},
+    ]
+    client, _ = make_client(tmp_path, review_runner_factory(
+        notes, dropped_lines=[2], missing_spans=[[8.0, 9.5]]))
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "hi\nthere\ngone",
+        "youtube_url": "http://y"})
+    job_id = resp.json()["id"]
+    wait_status(client, job_id, "done")
+    body = client.get(f"/api/jobs/{job_id}/review").json()
+    assert body["lines"] == [
+        {"index": 0, "text": "hi", "dropped": False,
+         "notes": [{"start": 1.0, "end": 1.4, "pitch": 0, "low_confidence": False}],
+         "words": []},
+        {"index": 1, "text": "there", "dropped": False,
+         "notes": [{"start": 5.0, "end": 5.3, "pitch": 2, "low_confidence": True}],
+         "words": []},
+        {"index": 2, "text": "gone", "dropped": True, "notes": [], "words": []},
+    ]
+    assert body["missing_spans"] == [{"start": 8.0, "end": 9.5}]
+
+
+def test_review_endpoint_includes_per_word_timing(tmp_path):
+    notes = [
+        {"start": 1.0, "duration": 0.4, "pitch": 0, "text": "hi",
+         "low_confidence": False, "line_index": 0},
+        {"start": 5.0, "duration": 0.3, "pitch": 2, "text": "there",
+         "low_confidence": True, "line_index": 1},
+    ]
+    words = [
+        {"word": "hi", "start": 1.0, "end": 1.4, "score": 0.9, "line_index": 0},
+        {"word": "there", "start": 5.0, "end": 5.3, "score": 0.9, "line_index": 1},
+    ]
+    client, _ = make_client(tmp_path, review_runner_factory(
+        notes, dropped_lines=[2], missing_spans=[[8.0, 9.5]], words=words))
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "hi\nthere\ngone",
+        "youtube_url": "http://y"})
+    job_id = resp.json()["id"]
+    wait_status(client, job_id, "done")
+    body = client.get(f"/api/jobs/{job_id}/review").json()
+    assert body["lines"][0]["words"] == [{"text": "hi", "start": 1.0, "end": 1.4}]
+    assert body["lines"][1]["words"] == [{"text": "there", "start": 5.0, "end": 5.3}]
+    assert body["lines"][2]["dropped"] is True
+    assert body["lines"][2]["words"] == []
+
+
+def test_review_of_a_failed_job_is_404(tmp_path):
+    def bad_runner(*a, **kw):
+        raise PipelineError("boom")
+    client, _ = make_client(tmp_path, bad_runner)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"})
+    job_id = resp.json()["id"]
+    wait_status(client, job_id, "failed")
+    assert client.get(f"/api/jobs/{job_id}/review").status_code == 404
+
+
+def test_review_of_a_running_job_is_409(tmp_path):
+    release = threading.Event()
+
+    def blocking(inp, cfg, log=print, force_from=None, stages=None):
+        release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, blocking)
+    resp = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"})
+    job_id = resp.json()["id"]
+    try:
+        wait_status(client, job_id, "running")
+        assert client.get(f"/api/jobs/{job_id}/review").status_code == 409
+    finally:
+        release.set()
+    wait_status(client, job_id, "done")
+
+
+def test_review_of_an_unknown_job_is_404(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    assert client.get("/api/jobs/nope/review").status_code == 404
+
+
+def test_review_missing_when_pipeline_never_wrote_notes(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    job_id = make_done_job(client)
+    assert client.get(f"/api/jobs/{job_id}/review").status_code == 404
