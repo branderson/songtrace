@@ -1070,6 +1070,7 @@ def test_delete_removes_work_and_output_and_the_job(tmp_path):
 def test_delete_tolerates_a_work_dir_that_is_already_gone(tmp_path):
     client, cfg = make_client(tmp_path, slug_runner)
     job_id = make_done_job(client)
+    shutil.rmtree(cfg.work_dir / "A - T")
     resp = client.delete(f"/api/jobs/{job_id}")
     assert resp.status_code == 204
 
@@ -1094,6 +1095,29 @@ def test_delete_of_a_running_job_is_409(tmp_path):
     finally:
         release.set()
     wait_status(client, parent, "done")
+    assert client.get(f"/api/jobs/{parent}").status_code == 200
+
+
+def test_delete_of_a_job_with_an_active_rebuild_is_409(tmp_path):
+    """A done job's slug must not be deleted out from under a rebuild in flight."""
+    release = threading.Event()
+    calls = []
+
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        calls.append(1)
+        if len(calls) > 1:
+            release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, runner)
+    parent = make_done_job(client)
+    child = client.post(f"/api/jobs/{parent}/rebuild-full").json()["id"]
+    try:
+        wait_status(client, child, "running")
+        assert client.delete(f"/api/jobs/{parent}").status_code == 409
+    finally:
+        release.set()
+    wait_status(client, child, "done")
     assert client.get(f"/api/jobs/{parent}").status_code == 200
 
 

@@ -104,17 +104,18 @@ def _discover_jobs(cfg: Config) -> list[Job]:
                 if data.get(key) is not None:
                     data[key] = Path(data[key])
             inp = SongInput(**data)
+            slug = song_slug(inp)
+            out = cfg.output_dir / slug
+            done = out.exists() and any(out.iterdir())
+            mtime = sidecar.stat().st_mtime
+            warnings = read_warnings(sidecar.parent) if done else []
         except (OSError, ValueError, TypeError):
             continue
-        slug = song_slug(inp)
-        out = cfg.output_dir / slug
-        done = out.exists() and any(out.iterdir())
-        mtime = sidecar.stat().st_mtime
         discovered.append(Job(
             id=uuid.uuid4().hex, title=inp.title, artist=inp.artist, inp=inp,
             status="done" if done else "failed",
             output_dir=str(out) if done else None,
-            warnings=read_warnings(sidecar.parent) if done else [],
+            warnings=warnings,
             error=None if done else "interrupted before completion",
             created_at=mtime, finished_at=mtime))
     discovered.sort(key=lambda j: j.created_at)
@@ -358,14 +359,21 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
     @app.delete("/api/jobs/{job_id}", status_code=204)
     def delete_job(job_id: str):
-        job = _finished_job(job_id)
-        slug = song_slug(job.inp)
-        shutil.rmtree(cfg.work_dir / slug, ignore_errors=True)
-        shutil.rmtree(cfg.output_dir / slug, ignore_errors=True)
         with lock:
+            job = jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404)
+            if job.status in ("queued", "running"):
+                raise HTTPException(409, "job is still in progress")
+            slug = song_slug(job.inp)
+            if any(other.status in ("queued", "running") and song_slug(other.inp) == slug
+                   for other_id, other in jobs.items() if other_id != job_id):
+                raise HTTPException(409, "another job for this song is in progress")
             jobs.pop(job_id, None)
             if job_id in order:
                 order.remove(job_id)
+        shutil.rmtree(cfg.work_dir / slug, ignore_errors=True)
+        shutil.rmtree(cfg.output_dir / slug, ignore_errors=True)
 
     return app
 
