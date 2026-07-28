@@ -11,7 +11,7 @@ COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
-ENV KARAOKE_MAKER_CONFIG=/config/config.toml \
+ENV SONGTRACE_CONFIG=/config/config.toml \
     TORCH_HOME=/data/models \
     XDG_CACHE_HOME=/data/models/cache
 

@@ -24,7 +24,7 @@ def test_paths_and_overrides(tmp_path):
 def test_env_var(tmp_path, monkeypatch):
     cfg_file = tmp_path / "c.toml"
     cfg_file.write_text('whisper_url = "http://env/v1"\n')
-    monkeypatch.setenv("KARAOKE_MAKER_CONFIG", str(cfg_file))
+    monkeypatch.setenv("SONGTRACE_CONFIG", str(cfg_file))
     assert load_config().whisper_url == "http://env/v1"
 
 

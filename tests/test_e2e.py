@@ -4,8 +4,8 @@ import shutil
 import pytest
 
 requires_full = pytest.mark.skipif(
-    not os.environ.get("KARAOKE_E2E"),
-    reason="set KARAOKE_E2E=1 (needs GPU, ffmpeg, whisper server, network)")
+    not os.environ.get("SONGTRACE_E2E"),
+    reason="set SONGTRACE_E2E=1 (needs GPU, ffmpeg, whisper server, network)")
 
 @requires_full
 def test_full_pipeline(tmp_path):
@@ -16,10 +16,10 @@ def test_full_pipeline(tmp_path):
     cfg.output_dir = tmp_path / "out"
     cfg.work_dir = tmp_path / "work"
     inp = SongInput(
-        title=os.environ["KARAOKE_E2E_TITLE"],
-        artist=os.environ["KARAOKE_E2E_ARTIST"],
-        lyrics_text=open(os.environ["KARAOKE_E2E_LYRICS"]).read(),
-        youtube_url=os.environ.get("KARAOKE_E2E_URL"),
+        title=os.environ["SONGTRACE_E2E_TITLE"],
+        artist=os.environ["SONGTRACE_E2E_ARTIST"],
+        lyrics_text=open(os.environ["SONGTRACE_E2E_LYRICS"]).read(),
+        youtube_url=os.environ.get("SONGTRACE_E2E_URL"),
     )
     result = run_pipeline(inp, cfg)
     txts = list(result.output_dir.glob("*.txt"))
