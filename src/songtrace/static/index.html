@@ -325,7 +325,12 @@ button { cursor: pointer; }
 .review-line-dropped { opacity: 0.55; }
 .review-line-dropped .review-line-text { text-decoration: line-through; }
 .review-line-note { display: block; margin-top: 4px; font-size: 0.72rem; color: var(--text-muted); }
-.review-roll { display: block; width: 100%; height: 20px; margin-top: 6px; }
+.review-line-timeline { position: relative; margin-top: 4px; }
+.review-lane { position: absolute; top: 0; bottom: 0; }
+.review-lane-alt { background: var(--panel-raised); }
+.review-word-row { position: relative; height: 18px; }
+.review-word { position: absolute; top: 0; white-space: nowrap; font-size: 0.9rem; }
+.review-roll { display: block; width: 100%; height: 20px; margin-top: 4px; }
 .review-note { fill: var(--aqua); }
 .review-note-low { fill: var(--warn); }
 .review-missing {
@@ -804,13 +809,11 @@ function missingSpanNode(span) {
   return p;
 }
 
-function pianoRoll(notes, minPitch, span) {
+function pianoRoll(notes, minPitch, span, t0, t1) {
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("class", "review-roll");
   svg.setAttribute("viewBox", "0 0 100 20");
   svg.setAttribute("preserveAspectRatio", "none");
-  const t0 = notes[0].start;
-  const t1 = Math.max(...notes.map(n => n.end));
   const dur = Math.max(t1 - t0, 0.001);
   for (const n of notes) {
     const rect = document.createElementNS(SVG_NS, "rect");
@@ -827,21 +830,62 @@ function pianoRoll(notes, minPitch, span) {
   return svg;
 }
 
+// Lays words out along a shared time axis (like a karaoke lyric line) so
+// each word's notes render directly beneath it instead of as one flat strip.
+function lineTimeline(words, notes, minPitch, span) {
+  const t0 = words[0].start;
+  const t1 = words[words.length - 1].end;
+  const dur = Math.max(t1 - t0, 0.001);
+  const box = document.createElement("div");
+  box.className = "review-line-timeline";
+  words.forEach((w, i) => {
+    const lane = document.createElement("div");
+    lane.className = "review-lane" + (i % 2 ? " review-lane-alt" : "");
+    lane.style.left = `${((w.start - t0) / dur) * 100}%`;
+    lane.style.width = `${Math.max(((w.end - w.start) / dur) * 100, 0.5)}%`;
+    box.append(lane);
+  });
+  const wordsRow = document.createElement("div");
+  wordsRow.className = "review-word-row";
+  for (const w of words) {
+    const label = document.createElement("span");
+    label.className = "review-word";
+    label.style.left = `${((w.start - t0) / dur) * 100}%`;
+    label.textContent = w.text;
+    wordsRow.append(label);
+  }
+  box.append(wordsRow);
+  if (notes.length) box.append(pianoRoll(notes, minPitch, span, t0, t1));
+  return box;
+}
+
 function lineNode(line, minPitch, span) {
   const row = document.createElement("div");
   row.className = "review-line" + (line.dropped ? " review-line-dropped" : "");
-  const text = document.createElement("span");
-  text.className = "review-line-text";
-  text.textContent = line.text;
-  row.append(text);
   if (line.dropped) {
+    const text = document.createElement("span");
+    text.className = "review-line-text";
+    text.textContent = line.text;
+    row.append(text);
     const note = document.createElement("span");
     note.className = "review-line-note";
     note.textContent = "not sung — dropped";
     row.append(note);
     return row;
   }
-  if (line.notes.length) row.append(pianoRoll(line.notes, minPitch, span));
+  if (line.words.length) {
+    row.append(lineTimeline(line.words, line.notes, minPitch, span));
+    return row;
+  }
+  const text = document.createElement("span");
+  text.className = "review-line-text";
+  text.textContent = line.text;
+  row.append(text);
+  if (line.notes.length) {
+    const t0 = line.notes[0].start;
+    const t1 = Math.max(...line.notes.map(n => n.end));
+    row.append(pianoRoll(line.notes, minPitch, span, t0, t1));
+  }
   return row;
 }
 

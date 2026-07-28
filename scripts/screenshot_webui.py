@@ -70,12 +70,24 @@ SONGS = [
               {"index": 0, "text": "Alas, my love, you do me wrong",
                "dropped": False,
                "notes": [{"start": 12.0, "end": 12.4, "pitch": 0, "low_confidence": False},
-                         {"start": 12.5, "end": 12.9, "pitch": 2, "low_confidence": False}]},
+                         {"start": 12.5, "end": 12.9, "pitch": 2, "low_confidence": False}],
+               "words": [{"text": "Alas,", "start": 10.0, "end": 10.4},
+                         {"text": "my", "start": 10.4, "end": 10.6},
+                         {"text": "love,", "start": 10.6, "end": 11.0},
+                         {"text": "you", "start": 11.0, "end": 11.2},
+                         {"text": "do", "start": 11.2, "end": 11.4},
+                         {"text": "me", "start": 11.4, "end": 11.6},
+                         {"text": "wrong", "start": 11.8, "end": 12.9}]},
               {"index": 1, "text": "To cast me off discourteously",
                "dropped": False,
-               "notes": [{"start": 45.0, "end": 45.4, "pitch": 4, "low_confidence": True}]},
+               "notes": [{"start": 45.0, "end": 45.4, "pitch": 4, "low_confidence": True}],
+               "words": [{"text": "To", "start": 44.0, "end": 44.3},
+                         {"text": "cast", "start": 44.3, "end": 44.6},
+                         {"text": "me", "start": 44.6, "end": 44.8},
+                         {"text": "off", "start": 44.8, "end": 45.0},
+                         {"text": "discourteously", "start": 45.0, "end": 45.4}]},
               {"index": 2, "text": "For I have loved you well and long",
-               "dropped": True, "notes": []},
+               "dropped": True, "notes": [], "words": []},
           ],
           "missing_spans": [{"start": 130.0, "end": 138.0}],
       }}),
@@ -113,6 +125,11 @@ def make_runner():
                     "missing_spans": [[s["start"], s["end"]]
                                       for s in extra["review"]["missing_spans"]],
                 }))
+                (work / "alignment.json").write_text(json.dumps([
+                    {"word": w["text"], "start": w["start"], "end": w["end"],
+                     "score": 0.9, "line_index": line["index"]}
+                    for line in extra["review"]["lines"] for w in line.get("words", [])
+                ]))
             out = cfg.output_dir / f"{inp.artist} - {inp.title}"
             out.mkdir(parents=True, exist_ok=True)
             return PipelineResult(output_dir=out, warnings=extra["warnings"])

@@ -320,6 +320,12 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         dropped = set(meta.get("dropped_lines", []))
         missing_spans = [{"start": s, "end": e}
                          for s, e in meta.get("missing_spans", [])]
+        align_file = work / "alignment.json"
+        align_rows = json.loads(align_file.read_text()) if align_file.exists() else []
+        words_by_line: dict[int, list] = {}
+        for r in align_rows:
+            words_by_line.setdefault(r["line_index"], []).append(
+                {"text": r["word"], "start": r["start"], "end": r["end"]})
         ref = normalize_lyrics(job.inp.lyrics_text)
         by_line: dict[int, list] = {}
         for n in notes_data["notes"]:
@@ -327,7 +333,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 "start": n["start"], "end": n["start"] + n["duration"],
                 "pitch": n["pitch"], "low_confidence": n["low_confidence"]})
         lines = [{"index": i, "text": " ".join(words), "dropped": i in dropped,
-                  "notes": by_line.get(i, [])}
+                  "notes": by_line.get(i, []), "words": words_by_line.get(i, [])}
                  for i, words in enumerate(ref.lines)]
         return {"lines": lines, "missing_spans": missing_spans}
 
