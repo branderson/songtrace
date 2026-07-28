@@ -3,7 +3,7 @@ from pathlib import Path
 
 from ..lyrics import RefLyrics, alignment_token, normalize_lyrics
 from ..pipeline import Ctx, PipelineError, Stage
-from .transcribe import load_transcript, lyrics_similarity, vocal_sections
+from .transcribe import classify_lyrics_match, load_transcript, lyrics_similarity, vocal_sections
 
 SIMILARITY_THRESHOLD = 0.4
 
@@ -42,16 +42,15 @@ def force_align_section(vocals_path: Path, start: float, end: float,
              sum(t.score for t in s) / len(s)) for s in spans]
 
 
-def _assign_lines_to_sections(ref: RefLyrics, sections) -> list[list[int]]:
-    """Split lyric lines across vocal sections proportionally to section duration."""
+def _assign_lines_to_sections(line_indices: list[int], sections) -> list[list[int]]:
+    """Split matched lyric line indices across vocal sections proportionally to section duration."""
     total = sum(b - a for a, b in sections) or 1.0
-    n_lines = len(ref.lines)
+    n = len(line_indices)
     groups, elapsed, start = [], 0.0, 0
     for i, (a, b) in enumerate(sections):
         elapsed += b - a
-        stop = n_lines if i == len(sections) - 1 else min(
-            n_lines, round(n_lines * elapsed / total))
-        groups.append(list(range(start, max(stop, start))))
+        stop = n if i == len(sections) - 1 else min(n, round(n * elapsed / total))
+        groups.append(line_indices[start:max(stop, start)])
         start = max(stop, start)
     return groups
 
@@ -99,7 +98,7 @@ def _align_section(vocals: Path, sec: tuple[float, float], words: list[tuple[str
 
 def _run(ctx: Ctx) -> None:
     ref = normalize_lyrics(ctx.inp.lyrics_text)
-    segments = load_transcript(ctx)
+    segments = sorted(load_transcript(ctx), key=lambda s: s.start)
     sim = lyrics_similarity(segments, ref)
     if sim < SIMILARITY_THRESHOLD:
         raise PipelineError(
@@ -107,15 +106,21 @@ def _run(ctx: Ctx) -> None:
             "wrong lyrics or wrong recording?")
     # normalised so an inverted span can never collapse a section onto one instant
     sections = [(min(a, b), max(a, b)) for a, b in vocal_sections(segments)]
+    dropped_lines, missing_spans = classify_lyrics_match(segments, ref, sections)
+    matched = [i for i in range(len(ref.lines)) if i not in set(dropped_lines)]
     vocals = ctx.work / "vocals.wav"
     rows = []
-    for sec, line_idxs in zip(sections, _assign_lines_to_sections(ref, sections)):
+    for sec, line_idxs in zip(sections, _assign_lines_to_sections(matched, sections)):
         words = [(w, li) for li in line_idxs for w in ref.lines[li]]
         if words:
             rows.extend(_align_section(vocals, sec, words, ctx.inp.language,
                                        ctx.cfg.device))
     _enforce_monotonic(rows)
     (ctx.work / "alignment.json").write_text(json.dumps(rows))
+    (ctx.work / "align_meta.json").write_text(json.dumps({
+        "dropped_lines": dropped_lines,
+        "missing_spans": [list(s) for s in missing_spans],
+    }))
 
 
 def align_stage() -> Stage:

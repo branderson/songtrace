@@ -137,3 +137,26 @@ def test_words_split_across_sections(tmp_path, monkeypatch):
     check_invariants(rows, LYRICS)
     assert rows[3]["end"] <= 5.0
     assert rows[4]["start"] >= 29.0
+
+
+def test_align_drops_lines_never_sung(tmp_path, monkeypatch):
+    lyrics = "it's one two three\nfour five six seven eight\nnine ten eleven twelve"
+    transcript = [{"start": 1.0, "end": 4.0,
+                   "text": "it's one two three four five six seven eight"}]
+    rows = run_align(tmp_path, monkeypatch, lyrics, transcript)
+    assert {r["line_index"] for r in rows} == {0, 1}
+    meta = json.loads((tmp_path / "w" / "align_meta.json").read_text())
+    assert meta["dropped_lines"] == [2]
+    assert meta["missing_spans"] == []
+
+
+def test_align_flags_missing_span_for_unmatched_singing(tmp_path, monkeypatch):
+    lyrics = "it's one two three\nfour five six seven eight"
+    transcript = [
+        {"start": 1.0, "end": 4.0, "text": "it's one two three four five six seven eight"},
+        {"start": 20.0, "end": 23.0, "text": "completely unrelated ad lib bridge"},
+    ]
+    run_align(tmp_path, monkeypatch, lyrics, transcript)
+    meta = json.loads((tmp_path / "w" / "align_meta.json").read_text())
+    assert meta["dropped_lines"] == []
+    assert meta["missing_spans"] == [[19.0, 24.0]]
