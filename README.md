@@ -128,4 +128,4 @@ python scripts/screenshot_webui.py
 
 ## License
 
-[GPLv3](LICENSE)
+[AGPLv3](LICENSE)
