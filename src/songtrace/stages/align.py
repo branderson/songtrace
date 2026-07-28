@@ -106,7 +106,7 @@ def _run(ctx: Ctx) -> None:
             "wrong lyrics or wrong recording?")
     # normalised so an inverted span can never collapse a section onto one instant
     sections = [(min(a, b), max(a, b)) for a, b in vocal_sections(segments)]
-    dropped_lines, missing_spans = classify_lyrics_match(segments, ref, sections)
+    dropped_lines, missing_spans = classify_lyrics_match(segments, ref)
     matched = [i for i in range(len(ref.lines)) if i not in set(dropped_lines)]
     vocals = ctx.work / "vocals.wav"
     rows = []

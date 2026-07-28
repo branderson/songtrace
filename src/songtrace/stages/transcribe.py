@@ -39,14 +39,17 @@ def lyrics_similarity(segments, ref: RefLyrics) -> float:
     return matcher.ratio()
 
 
-def classify_lyrics_match(segments, ref: RefLyrics, sections
+def classify_lyrics_match(segments, ref: RefLyrics, pad: float = 1.0
                           ) -> tuple[list[int], list[tuple[float, float]]]:
     """Split reference lines into matched vs. dropped, and flag sung spans no
     reference line explains.
 
     dropped_lines: reference line indices covered only by 'insert' opcodes
-    (present in the lyrics, never heard). missing_spans: vocal `sections`
-    containing 'delete' opcodes (heard, but matching no reference word).
+    (present in the lyrics, never heard). missing_spans: the padded, merged
+    bounds of the heard segments behind 'delete' opcodes (heard, but matching
+    no reference word) — scoped tightly to the unmatched audio itself, not
+    the whole vocal section it falls in, so matched lines sharing a section
+    with an ad-lib keep their notes.
     """
     matcher, seg_of, line_of = match_lyrics(segments, ref)
     covered = [False] * len(line_of)
@@ -59,17 +62,25 @@ def classify_lyrics_match(segments, ref: RefLyrics, sections
         by_line.setdefault(li, []).append(covered[j])
     dropped_lines = sorted(li for li, cov in by_line.items() if not any(cov))
 
-    missing = set()
+    spans = []
     for tag, ai1, ai2, _, _ in matcher.get_opcodes():
         if tag != "delete":
             continue
-        si = seg_of[ai1]
-        mid = (segments[si].start + segments[si].end) / 2
-        for a, b in sections:
-            if a <= mid <= b:
-                missing.add((a, b))
-                break
-    return dropped_lines, sorted(missing)
+        sis = [seg_of[i] for i in range(ai1, ai2)]
+        start = max(0.0, min(segments[si].start for si in sis) - pad)
+        end = max(segments[si].end for si in sis) + pad
+        spans.append((start, end))
+    return dropped_lines, _merge_spans(spans)
+
+
+def _merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    merged: list[list[float]] = []
+    for a, b in sorted(spans):
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return [tuple(s) for s in merged]
 
 
 def _run(ctx: Ctx) -> None:

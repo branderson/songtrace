@@ -84,14 +84,20 @@ def build_notes(rows: list[dict], times, f0, conf, language: str | None,
                 ) -> tuple[list[TimedNote], list[float], list[str]]:
     notes: list[TimedNote] = []
     breaks: list[float] = []
-    prev_line, prev_end = None, 0.0
+    prev_line, prev_end, last_seen_line = None, 0.0, None
     for row in rows:
-        if prev_line is not None and row["line_index"] > prev_line:
+        # last_seen_line tracks every row (skipped or not) so a run of
+        # skipped rows can't trigger a duplicate break on the next row of
+        # the same still-unseen line; prev_line/prev_end only advance on
+        # rows that actually emit notes, so a skipped row can't corrupt
+        # line_initial or break timing for its own line's later words.
+        if last_seen_line is not None and row["line_index"] > last_seen_line:
             breaks.append((prev_end + row["start"]) / 2)
+        last_seen_line = row["line_index"]
         line_initial = row["line_index"] != prev_line
-        prev_line, prev_end = row["line_index"], row["end"]
         if any(a <= row["start"] < b for a, b in missing_spans):
             continue
+        prev_line, prev_end = row["line_index"], row["end"]
         segs = segment_span(times, f0, conf, row["start"], row["end"])
         if not segs:
             pitch = notes[-1].pitch if notes else 0
