@@ -4,8 +4,8 @@ Turn a song and its lyrics into a playable UltraStar chart.
 
 A CLI and minimal web UI that turns a song — title, artist, lyrics you supply,
 and a YouTube URL or local video file — into a playable
-[UltraStar](https://usdx.eu/format/)-format song folder for
-[Melody Mania](https://melodymania.net/), a commercial UltraStar Deluxe fork.
+[UltraStar](https://usdx.eu/format/)-format song folder. Also compatible with
+[Melody Mania](https://melodymania.org/).
 
 The pipeline:
 
