@@ -16,4 +16,4 @@ ENV KARAOKE_MAKER_CONFIG=/config/config.toml \
     XDG_CACHE_HOME=/data/models/cache
 
 EXPOSE 8000
-CMD ["karaoke-maker", "serve"]
+CMD ["songtrace", "serve"]

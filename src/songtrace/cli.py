@@ -16,7 +16,7 @@ def _positive_float(value: str) -> float:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="karaoke-maker")
+    parser = argparse.ArgumentParser(prog="songtrace")
     parser.add_argument("--version", action="store_true")
     sub = parser.add_subparsers(dest="command")
 
@@ -72,7 +72,7 @@ def _cmd_make(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.version:
-        print(f"karaoke-maker {version('karaoke-maker')}")
+        print(f"songtrace {version('songtrace')}")
         return 0
     if args.command == "make":
         return _cmd_make(args)
