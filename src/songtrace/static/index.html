@@ -194,6 +194,9 @@ body {
 }
 
 #song-form { display: grid; gap: 18px; }
+.song-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.song-form-main { display: grid; gap: 18px; align-content: start; }
+.song-form-lyrics textarea { height: 100%; flex: 1 1 auto; }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > span {
@@ -220,7 +223,6 @@ input:not([type="file"]):hover { border-bottom-color: var(--text-muted); }
 input:not([type="file"]):focus { border-bottom-color: var(--aqua); }
 
 textarea {
-  min-height: 8.5rem;
   padding: 11px 13px;
   line-height: 1.6;
   background: var(--panel);
@@ -229,6 +231,7 @@ textarea {
 }
 textarea:hover { border-color: var(--text-muted); }
 textarea:focus { border-color: var(--aqua); }
+.song-form-lyrics textarea { min-height: 8.5rem; }
 
 input[type="file"] {
   font-size: 0.82rem;
@@ -464,6 +467,11 @@ button { cursor: pointer; }
   #stage-track { margin-left: 0; flex-wrap: wrap; }
 }
 
+@media (max-width: 720px) {
+  .song-form-grid { grid-template-columns: 1fr; }
+  .song-form-lyrics textarea { height: auto; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
@@ -486,29 +494,33 @@ button { cursor: pointer; }
   <section id="new-song">
     <h2>NEW SONG</h2>
     <form id="song-form">
-      <div class="pair">
-        <label class="field"><span>Title</span><input name="title" required></label>
-        <label class="field"><span>Artist</span><input name="artist" required></label>
-      </div>
-      <label class="field"><span>Lyrics</span><textarea name="lyrics" required></textarea></label>
-      <details>
-        <summary>Advanced</summary>
-        <div class="stack">
+      <div class="song-form-grid">
+        <div class="song-form-main">
+          <div class="pair">
+            <label class="field"><span>Title</span><input name="title" required></label>
+            <label class="field"><span>Artist</span><input name="artist" required></label>
+          </div>
           <label class="field"><span>YouTube URL</span><input name="youtube_url"></label>
           <label class="field"><span>Video file</span><input type="file" name="video"></label>
           <p class="keep-note" data-keep="video" hidden></p>
-          <div class="pair">
-            <label class="field"><span>Genre</span><input name="genre"></label>
-            <label class="field"><span>Year</span><input name="year" type="number"></label>
-          </div>
-          <div class="pair">
-            <label class="field"><span>Language</span><input name="language"></label>
-            <label class="field"><span>BPM override</span><input name="bpm" type="number" step="any"></label>
-          </div>
-          <label class="field"><span>Cover image</span><input type="file" name="cover"></label>
-          <p class="keep-note" data-keep="cover" hidden></p>
+          <details>
+            <summary>Advanced</summary>
+            <div class="stack">
+              <div class="pair">
+                <label class="field"><span>Genre</span><input name="genre"></label>
+                <label class="field"><span>Year</span><input name="year" type="number"></label>
+              </div>
+              <div class="pair">
+                <label class="field"><span>Language</span><input name="language"></label>
+                <label class="field"><span>BPM override</span><input name="bpm" type="number" step="any"></label>
+              </div>
+              <label class="field"><span>Cover image</span><input type="file" name="cover"></label>
+              <p class="keep-note" data-keep="cover" hidden></p>
+            </div>
+          </details>
         </div>
-      </details>
+        <label class="field song-form-lyrics"><span>Lyrics</span><textarea name="lyrics" required></textarea></label>
+      </div>
       <div class="form-actions">
         <button type="submit" class="primary">CREATE SONG</button>
         <button type="button" id="cancel-rebuild" hidden>CANCEL</button>

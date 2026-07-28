@@ -359,6 +359,32 @@ def test_index_has_required_hooks():
         assert f'name="{name}"' in html, name
 
 
+def test_video_source_fields_are_outside_advanced_details():
+    html = _index_html()
+    form_start = html.index('id="song-form"')
+    details_start = html.index("<details>", form_start)
+    before = html[form_start:details_start]
+    assert 'name="youtube_url"' in before
+    assert 'name="video"' in before
+    after = html[details_start:]
+    for name in ("genre", "year", "language", "bpm", "cover"):
+        assert f'name="{name}"' in after
+
+
+def test_song_form_lyrics_uses_a_two_column_grid():
+    css = _page_css(_index_html())
+    assert re.search(r"\.song-form-grid\s*\{[^}]*grid-template-columns:\s*1fr 1fr",
+                     css, re.S)
+
+
+def test_song_form_grid_stacks_on_narrow_screens():
+    css = _page_css(_index_html())
+    assert re.search(
+        r"@media \(max-width: 720px\)\s*\{[^}]*\.song-form-grid\s*\{[^}]*"
+        r"grid-template-columns:\s*1fr\s*;",
+        css, re.S)
+
+
 def test_index_makes_no_external_requests():
     import re as _re
     html = _index_html()
