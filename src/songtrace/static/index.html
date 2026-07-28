@@ -758,6 +758,7 @@ async function refreshJobs() {
   renderJobs(jobs);
   renderNowBar(jobs);
   if (selectedId) refreshDetail();
+  else clearDetail();
   schedulePoll(jobs);
 }
 
@@ -874,6 +875,21 @@ function renderOutputPath(job) {
   outputPathDiv.replaceChildren(wrap);
 }
 
+function clearDetail() {
+  reviewTitle.replaceChildren();
+  reviewError.hidden = true;
+  reviewError.textContent = "";
+  document.getElementById("warnings").replaceChildren(
+    emptyNote("no songs queued yet — nothing to review"));
+  outputPathDiv.replaceChildren();
+  reviewActions.replaceChildren();
+  delete reviewActions.dataset.jobId;
+  reviewLineage.replaceChildren();
+  reviewLineage.hidden = true;
+  delete reviewLineage.dataset.jobId;
+  detail.textContent = "no songs queued yet — nothing to log";
+}
+
 function setFormMode(inp) {
   formHeading.textContent = rebuildOf ? "REBUILD" : "NEW SONG";
   submitButton.textContent = rebuildOf ? "REBUILD SONG" : "CREATE SONG";
@@ -920,21 +936,60 @@ async function rerunJob(id) {
   refreshJobs();
 }
 
+async function rebuildFullJob(id) {
+  formError.textContent = "";
+  const resp = await fetch(`/api/jobs/${id}/rebuild-full`, { method: "POST" });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    formError.textContent = body.detail || `error: ${resp.status}`;
+    return;
+  }
+  selectedId = (await resp.json()).id;
+  refreshJobs();
+}
+
+async function deleteJob(id) {
+  if (!confirm("Delete this song? This removes all its files and cannot be undone.")) return;
+  formError.textContent = "";
+  const resp = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    formError.textContent = body.detail || `error: ${resp.status}`;
+    return;
+  }
+  if (selectedId === id) selectedId = null;
+  refreshJobs();
+}
+
+const ACTION_LABELS = {
+  rerun: "RERUN",
+  edit: "EDIT & REBUILD",
+  "rebuild-full": "REBUILD FROM SCRATCH",
+  delete: "DELETE",
+};
+
+const ACTION_HANDLERS = {
+  rerun: rerunJob,
+  edit: startRebuild,
+  "rebuild-full": rebuildFullJob,
+  delete: deleteJob,
+};
+
 function actionButton(action, jobId) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "action";
   button.dataset.action = action;
-  button.textContent = action === "rerun" ? "RERUN" : "EDIT & REBUILD";
-  button.addEventListener("click",
-    () => action === "rerun" ? rerunJob(jobId) : startRebuild(jobId));
+  button.textContent = ACTION_LABELS[action];
+  button.addEventListener("click", () => ACTION_HANDLERS[action](jobId));
   return button;
 }
 
 function renderActions(job) {
-  // no controls mid-run: both endpoints answer 409 until the job settles
-  const wanted = job.status === "failed" ? ["rerun", "edit"]
-               : job.status === "done" ? ["edit"] : [];
+  // no controls mid-run: every endpoint answers 409 until the job settles
+  const doneActions = ["edit", "rebuild-full", "delete"];
+  const wanted = job.status === "failed" ? ["rerun", ...doneActions]
+               : job.status === "done" ? doneActions : [];
   const shown = [...reviewActions.children].map(b => b.dataset.action);
   // rebuilding an unchanged row would detach a focused action on every poll
   if (reviewActions.dataset.jobId === job.id && shown.join() === wanted.join()) return;

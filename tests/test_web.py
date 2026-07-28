@@ -532,6 +532,44 @@ def _rebuild_flaws(html):
     return flaws
 
 
+def _rebuild_full_and_delete_flaws(html):
+    flaws = []
+    actions = _fn_body(html, "renderActions")
+    for action in ('"rebuild-full"', '"delete"'):
+        if action not in actions:
+            flaws.append(f"{action} is not offered from renderActions")
+
+    rf = _fn_body(html, "rebuildFullJob")
+    if "/rebuild-full" not in rf or 'method: "POST"' not in rf:
+        flaws.append("rebuildFullJob does not POST to /rebuild-full")
+
+    d = _fn_body(html, "deleteJob")
+    confirm_idx = d.find("confirm(")
+    fetch_idx = d.find("fetch(")
+    if confirm_idx == -1:
+        flaws.append("deleteJob does not confirm before deleting")
+    elif fetch_idx != -1 and confirm_idx > fetch_idx:
+        flaws.append("deleteJob fetches before confirming")
+    if 'method: "DELETE"' not in d:
+        flaws.append("deleteJob does not send a DELETE request")
+    return flaws
+
+
+def test_rebuild_full_and_delete_controls_are_wired_up():
+    assert _rebuild_full_and_delete_flaws(_index_html()) == []
+
+
+def _empty_state_flaws(html):
+    refresh = _fn_body(html, "refreshJobs")
+    if "clearDetail()" not in refresh:
+        return ["refreshJobs never resets the panel when no job is selected"]
+    return []
+
+
+def test_review_panel_resets_when_no_job_is_selected():
+    assert _empty_state_flaws(_index_html()) == []
+
+
 # each mutation is a plausible regression; the checker above must reject all of them
 MUTATIONS = [
     (_focus_flaws, "queue: card moved unconditionally",
@@ -560,6 +598,14 @@ MUTATIONS = [
     (_rebuild_flaws, "rebuild: action row rebuilt on every poll",
      "if (reviewActions.dataset.jobId === job.id && shown.join() === wanted.join()) return;",
      ""),
+    (_rebuild_full_and_delete_flaws, "delete: confirmation dialog removed",
+     'if (!confirm("Delete this song? This removes all its files and cannot be undone.")) return;',
+     ""),
+    (_rebuild_full_and_delete_flaws, "rebuild-full: no longer offered on a done job",
+     '["edit", "rebuild-full", "delete"]', '["edit", "delete"]'),
+    (_empty_state_flaws, "empty state: clearDetail no longer wired into refreshJobs",
+     "if (selectedId) refreshDetail();\n  else clearDetail();",
+     "if (selectedId) refreshDetail();"),
 ]
 
 
