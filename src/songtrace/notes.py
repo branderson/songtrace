@@ -23,6 +23,7 @@ class TimedNote:
     pitch: int            # UltraStar semitone (0 = C4 = MIDI 60)
     text: str             # display text incl. leading space / "~"
     low_confidence: bool
+    line_index: int
 
 
 def hz_to_midi_float(hz: float) -> float:
@@ -78,7 +79,8 @@ def syllabify(word: str, language: str | None) -> list[str]:
     return parts or [word]
 
 
-def build_notes(rows: list[dict], times, f0, conf, language: str | None
+def build_notes(rows: list[dict], times, f0, conf, language: str | None,
+                dropped_lines=(), missing_spans=(), ref_lines=None
                 ) -> tuple[list[TimedNote], list[float], list[str]]:
     notes: list[TimedNote] = []
     breaks: list[float] = []
@@ -88,11 +90,14 @@ def build_notes(rows: list[dict], times, f0, conf, language: str | None
             breaks.append((prev_end + row["start"]) / 2)
         line_initial = row["line_index"] != prev_line
         prev_line, prev_end = row["line_index"], row["end"]
+        if any(a <= row["start"] < b for a, b in missing_spans):
+            continue
         segs = segment_span(times, f0, conf, row["start"], row["end"])
         if not segs:
             pitch = notes[-1].pitch if notes else 0
             notes.append(_note(row["start"], row["end"] - row["start"], pitch,
-                               _text(row["word"], 0, line_initial), True))
+                               _text(row["word"], 0, line_initial), True,
+                               row["line_index"]))
             continue
         low = row["score"] < LOW_SCORE
         sylls = syllabify(row["word"], language)
@@ -100,14 +105,16 @@ def build_notes(rows: list[dict], times, f0, conf, language: str | None
             segs = _subdivide(segs, len(sylls))
         for i, (s, e, midi) in enumerate(segs):
             text = _text(sylls[i], i, line_initial) if i < len(sylls) else "~"
-            notes.append(_note(s, e - s, round(midi) - 60, text, low))
+            notes.append(_note(s, e - s, round(midi) - 60, text, low,
+                               row["line_index"]))
     _deoverlap(notes)
-    return notes, breaks, _warnings(notes)
+    return notes, breaks, _warnings(notes, dropped_lines, missing_spans, ref_lines or [])
 
 
 def _note(start: float, duration: float, pitch: int, text: str,
-          low: bool) -> TimedNote:
-    return TimedNote(float(start), float(duration), int(pitch), text, low)
+          low: bool, line_index: int) -> TimedNote:
+    return TimedNote(float(start), float(duration), int(pitch), text, low,
+                     int(line_index))
 
 
 def _deoverlap(notes: list[TimedNote]) -> None:
@@ -153,7 +160,8 @@ def _fmt(t: float) -> str:
     return f"{int(t // 60)}:{int(t % 60):02d}"
 
 
-def _warnings(notes: list[TimedNote]) -> list[str]:
+def _warnings(notes: list[TimedNote], dropped_lines=(), missing_spans=(),
+             ref_lines=()) -> list[str]:
     warnings, run = [], []
     for n in list(notes) + [None]:
         if n is not None and n.low_confidence:
@@ -164,4 +172,21 @@ def _warnings(notes: list[TimedNote]) -> list[str]:
                 f"{len(run)} low-confidence note{'' if len(run) == 1 else 's'} "
                 f"near {_fmt(first.start)}–{_fmt(last.start + last.duration)}")
             run = []
+    for group in _consecutive_runs(dropped_lines):
+        n = len(group)
+        text = " ".join(ref_lines[group[0]]) if group[0] < len(ref_lines) else ""
+        warnings.append(
+            f"{n} line{'' if n == 1 else 's'} dropped (not sung) near \"{text}\"")
+    for a, b in missing_spans:
+        warnings.append(f"missing lyrics near {_fmt(a)}–{_fmt(b)}")
     return warnings
+
+
+def _consecutive_runs(indices) -> list[list[int]]:
+    runs = []
+    for i in sorted(indices):
+        if runs and i == runs[-1][-1] + 1:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    return runs
