@@ -307,6 +307,7 @@ button { cursor: pointer; }
   transition: background 120ms ease;
 }
 .primary:hover { background: #BE7BF9; }
+.primary:disabled { background: var(--control); color: var(--text-muted); cursor: not-allowed; }
 
 #form-error { margin: 12px 0 0; min-height: 1.2em; font-size: 0.85rem; color: var(--fail); }
 
@@ -371,6 +372,7 @@ button { cursor: pointer; }
 
 .form-actions { display: flex; align-items: center; gap: 14px; }
 .keep-note { margin: -8px 0 0; font-size: 0.78rem; color: var(--aqua); }
+#form-lock { margin: 0; font-size: 0.78rem; color: var(--text-muted); }
 #review-actions { display: flex; gap: 10px; margin-top: 14px; }
 #review-lineage { margin: -10px 0 14px; }
 .lineage {
@@ -531,7 +533,8 @@ button { cursor: pointer; }
       </div>
       <div class="form-actions">
         <button type="submit" class="primary">CREATE SONG</button>
-        <button type="button" id="cancel-rebuild" hidden>CANCEL</button>
+        <button type="button" id="cancel-rebuild" hidden>NEW SONG INSTEAD</button>
+        <p id="form-lock" hidden></p>
       </div>
     </form>
     <p id="form-error" role="alert"></p>
@@ -573,9 +576,11 @@ const stageTrack = document.getElementById("stage-track");
 const reviewActions = document.getElementById("review-actions");
 const reviewLineage = document.getElementById("review-lineage");
 const cancelRebuild = document.getElementById("cancel-rebuild");
+const formLock = document.getElementById("form-lock");
 const formHeading = document.querySelector("#new-song h2");
 const submitButton = form.querySelector("button[type=submit]");
 let rebuildOf = null;
+let formDirty = false;
 let JOBS = [];
 let selectedId = null;
 let STAGES = [];
@@ -637,6 +642,10 @@ for (const input of form.querySelectorAll('input[type="file"]')) {
     input.files = picked.files;
   });
 }
+
+// selecting another queue entry reloads the form, so track whether there is
+// anything of the operator's in there worth warning about first
+form.addEventListener("input", () => { formDirty = true; });
 
 cancelRebuild.addEventListener("click", exitRebuild);
 
@@ -772,6 +781,9 @@ async function refreshJobs() {
   const resp = await fetch("/api/jobs");
   const jobs = await resp.json();
   JOBS = jobs;
+  // deliberately not via selectJob: the auto-selection on load fills the review
+  // panel but leaves the form blank, so landing on the page is still the way to
+  // start a new song. Clicking a queue entry is what loads its inputs.
   if (selectedId === null && jobs.length) selectedId = jobs[0].id;
   renderJobs(jobs);
   renderNowBar(jobs);
@@ -781,11 +793,15 @@ async function refreshJobs() {
 }
 
 async function selectJob(id) {
+  // the form already holds this job; reloading it would drop edits in progress
+  const reload = id !== rebuildOf;
+  if (reload && formDirty && !confirm("Discard your unsaved edits to this form?")) return;
   selectedId = id;
   for (const card of jobsDiv.querySelectorAll(".job")) {
     if (card.dataset.id === id) card.setAttribute("aria-current", "true");
     else card.removeAttribute("aria-current");
   }
+  if (reload) await loadInputs(id, JOBS.find(j => j.id === id)?.status);
   refreshDetail();
 }
 
@@ -1015,25 +1031,42 @@ function clearDetail() {
   detail.textContent = "no songs queued yet — nothing to log";
 }
 
-function setFormMode(inp) {
+// a rebuild is refused with 409 until the job settles, so the form says so
+// rather than letting the submission fail
+function setSubmitLock(status) {
+  const locked = rebuildOf !== null && (status === "queued" || status === "running");
+  submitButton.disabled = locked;
+  formLock.textContent = locked ? "editable once this run finishes" : "";
+  formLock.hidden = !locked;
+}
+
+function setFormMode(inp, status) {
   formHeading.textContent = rebuildOf ? "REBUILD" : "NEW SONG";
   submitButton.textContent = rebuildOf ? "REBUILD SONG" : "CREATE SONG";
   cancelRebuild.hidden = !rebuildOf;
+  setSubmitLock(status);
   for (const [field, key] of [["video", "video_filename"], ["cover", "cover_filename"]]) {
     const note = form.querySelector(`[data-keep="${field}"]`);
     const kept = rebuildOf && inp ? inp[key] : null;
     note.textContent = kept ? `keeping ${kept} — attach a file to replace it` : "";
     note.hidden = !kept;
   }
+  // the advanced fields carry into a rebuild whether or not the section is open,
+  // so a job that has any must not hide them behind a closed summary
+  form.querySelector("details").open = !!inp && (!!inp.cover_filename ||
+    ["genre", "year", "language", "bpm"].some(n => form.elements[n].value));
 }
 
 function exitRebuild() {
   rebuildOf = null;
   form.reset();
-  setFormMode(null);
+  formDirty = false;
+  setFormMode(null, null);
 }
 
-async function startRebuild(id) {
+// selecting a queue entry brings its inputs back up, so a song can be adjusted
+// and rebuilt without being retyped
+async function loadInputs(id, status) {
   const resp = await fetch(`/api/jobs/${id}/input`);
   if (!resp.ok) return;
   const inp = await resp.json();
@@ -1044,9 +1077,9 @@ async function startRebuild(id) {
     if (el && value !== null) el.value = value;
   }
   rebuildOf = id;
-  setFormMode(inp);
+  formDirty = false;
+  setFormMode(inp, status);
   formError.textContent = "";
-  form.elements.title.focus();
 }
 
 async function rerunJob(id) {
@@ -1083,19 +1116,19 @@ async function deleteJob(id) {
     return;
   }
   if (selectedId === id) selectedId = null;
+  // the form is holding a job that no longer exists; a rebuild would 404
+  if (rebuildOf === id) exitRebuild();
   refreshJobs();
 }
 
 const ACTION_LABELS = {
   rerun: "RERUN",
-  edit: "EDIT & REBUILD",
   "rebuild-full": "REBUILD FROM SCRATCH",
   delete: "DELETE",
 };
 
 const ACTION_HANDLERS = {
   rerun: rerunJob,
-  edit: startRebuild,
   "rebuild-full": rebuildFullJob,
   delete: deleteJob,
 };
@@ -1112,7 +1145,7 @@ function actionButton(action, jobId) {
 
 function renderActions(job) {
   // no controls mid-run: every endpoint answers 409 until the job settles
-  const doneActions = ["edit", "rebuild-full", "delete"];
+  const doneActions = ["rebuild-full", "delete"];
   const wanted = job.status === "failed" ? ["rerun", ...doneActions]
                : job.status === "done" ? doneActions : [];
   const shown = [...reviewActions.children].map(b => b.dataset.action);
@@ -1149,6 +1182,7 @@ async function refreshDetail() {
   reviewTitle.replaceChildren(`${job.title} `, artist);
   reviewError.hidden = !job.error;
   reviewError.textContent = job.error ?? "";
+  if (rebuildOf === job.id) setSubmitLock(job.status);
   renderLyricsReview(job);
   renderOutputPath(job);
   renderLineage(job);

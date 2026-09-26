@@ -596,9 +596,25 @@ def _rebuild_flaws(html):
     if '"failed"' not in actions or '"done"' not in actions:
         flaws.append("the action row does not key off the job status")
 
-    start = _fn_body(html, "startRebuild")
-    if "/input" not in start or "form.elements[" not in start:
+    load = _fn_body(html, "loadInputs")
+    if "/input" not in load or "form.elements[" not in load:
         flaws.append("rebuild mode does not prefill the form from the job's input")
+
+    select = _fn_body(html, "selectJob")
+    if "loadInputs(" not in select:
+        flaws.append("selecting a queue entry does not bring its inputs back up")
+    if "formDirty" not in select or "confirm(" not in select:
+        flaws.append("selecting a queue entry discards unsaved edits without asking")
+
+    if "if (rebuildOf === id) exitRebuild();" not in _fn_body(html, "deleteJob"):
+        flaws.append("deleting the loaded job leaves the form pointed at it")
+
+    mode = _fn_body(html, "setFormMode")
+    if 'querySelector("details").open' not in mode:
+        flaws.append("prefilled genre/year/language/bpm stay hidden behind the "
+                     "closed Advanced summary, so they rebuild unseen")
+    if "submitButton.disabled" not in _fn_body(html, "setSubmitLock"):
+        flaws.append("the form lets you submit a rebuild the API will answer 409")
     return flaws
 
 
@@ -672,7 +688,18 @@ MUTATIONS = [
      'if (!confirm("Delete this song? This removes all its files and cannot be undone.")) return;',
      ""),
     (_rebuild_full_and_delete_flaws, "rebuild-full: no longer offered on a done job",
-     '["edit", "rebuild-full", "delete"]', '["edit", "delete"]'),
+     '["rebuild-full", "delete"]', '["delete"]'),
+    (_rebuild_flaws, "prefill: selecting a queue entry no longer loads its inputs",
+     "  if (reload) await loadInputs(id, JOBS.find(j => j.id === id)?.status);\n", ""),
+    (_rebuild_flaws, "prefill: unsaved edits discarded without asking",
+     '  if (reload && formDirty && !confirm("Discard your unsaved edits to this form?")) return;\n',
+     ""),
+    (_rebuild_flaws, "prefill: deleting the loaded job leaves the form pointed at it",
+     "  if (rebuildOf === id) exitRebuild();\n", ""),
+    (_rebuild_flaws, "prefill: advanced fields stay hidden behind a closed summary",
+     'form.querySelector("details").open =', "const unusedAdvancedOpen ="),
+    (_rebuild_flaws, "prefill: an in-progress job can be submitted for rebuild anyway",
+     "submitButton.disabled = locked;", ""),
     (_empty_state_flaws, "empty state: clearDetail no longer wired into refreshJobs",
      "if (selectedId) refreshDetail();\n  else clearDetail();",
      "if (selectedId) refreshDetail();"),
