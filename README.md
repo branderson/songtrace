@@ -51,7 +51,9 @@ $EDITOR config.toml   # set whisper_url at minimum
 
 See `config.example.toml` for every available field (`whisper_url`,
 `whisper_api_key`, `whisper_model`, `whisper_api`, `output_dir`, `work_dir`,
-`creator`, `demucs_model`, `crepe_model`, `device`, `bind_host`, `port`).
+`creator`, `demucs_model`, `crepe_model`, `device`, `bind_host`, `port`,
+`ytdlp_clients`, `ytdlp_cookies`, `ytdlp_impersonate`,
+`ytdlp_pot_provider_url`).
 
 `whisper_api` selects the wire format: `"openai"` (default) speaks the
 OpenAI-compatible `POST {whisper_url}/audio/transcriptions` API; `"asr-webservice"`
@@ -116,6 +118,46 @@ songtrace make --title "..." --artist "..." --lyrics lyrics.txt \
 
 Valid stages, in pipeline order: `acquire`, `separate`, `transcribe`,
 `align`, `pitch`, `notes`, `grid`, `package`.
+
+## YouTube download failures
+
+`HTTP Error 403: Forbidden` from the acquire stage means YouTube served the
+page but refused the media URL. In rough order of likelihood:
+
+1. **yt-dlp is stale.** YouTube changes its defences every few weeks and the
+   version baked into the image does not. Hotfix a running container, then
+   rebuild so it sticks:
+
+   ```sh
+   docker compose exec songtrace pip install -U 'yt-dlp[default,curl-cffi,deno]'
+   docker compose restart songtrace
+   docker compose build --pull songtrace   # permanent
+   ```
+
+2. **Missing JS runtime.** yt-dlp needs `yt-dlp-ejs` plus a JavaScript engine
+   to solve YouTube's player challenges; without them it silently falls back to
+   formats that 403. The `[default,curl-cffi,deno]` extras in `pyproject.toml`
+   cover this. Check with
+   `docker compose exec songtrace yt-dlp -v --simulate <url>` — the debug
+   header must show a `JS runtimes:` line that is not `none`.
+
+3. **The IP is rate-limited or flagged.** Datacenter and VPN ranges get
+   throttled hardest. Try from another network before changing config.
+
+4. **A PO token is required.** If the log says so explicitly, run
+   [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)
+   as a sidecar, install its plugin into the image, and point
+   `ytdlp_pot_provider_url` at it.
+
+`ytdlp_clients` retries the download against each listed player client in
+turn, so a client that YouTube has broken is skipped automatically.
+`ytdlp_cookies` (a Netscape cookie jar, for age-gated videos) and
+`ytdlp_impersonate` (a browser TLS fingerprint, e.g. `"chrome"`) are the other
+two levers. Do not use a cookie jar from an account you care about — YouTube
+bans for automated access.
+
+Failed downloads leave the work dir intact, so re-running the job resumes
+rather than starting over.
 
 ## Regenerating the web UI screenshot
 

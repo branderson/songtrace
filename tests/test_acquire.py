@@ -24,7 +24,7 @@ def test_local_video(tmp_path, monkeypatch):
     assert any("audio.wav" in str(a[-1]) for a in calls)
 
 def test_youtube(tmp_path, monkeypatch):
-    def fake_dl(url, dest):
+    def fake_dl(url, dest, cfg, log):
         video = dest / "source_video.webm"
         video.write_bytes(b"v")
         thumb = dest / "source_video.jpg"
@@ -83,3 +83,95 @@ def test_classify_picks_largest_video_when_multiple(tmp_path):
     (tmp_path / "source_video.mp4").write_bytes(b"much larger contents here")
     video, _ = acquire._classify_downloads(tmp_path)
     assert video.name == "source_video.mp4"
+
+def test_classify_ignores_partials_left_by_a_failed_attempt(tmp_path):
+    (tmp_path / "source_video.webm").write_bytes(b"v")
+    (tmp_path / "source_video.f137.mp4.part").write_bytes(b"a much bigger partial")
+    (tmp_path / "source_video.f251.webm.ytdl").write_bytes(b"resume state")
+    video, _ = acquire._classify_downloads(tmp_path)
+    assert video.name == "source_video.webm"
+
+def test_ydl_opts_default_client_adds_no_player_client(tmp_path):
+    cfg = Config(whisper_url="http://x/v1")
+    opts = acquire._ydl_opts(cfg, tmp_path, "default", print)
+    assert "youtube" not in opts["extractor_args"]
+    assert opts["retries"] and opts["fragment_retries"] and opts["extractor_retries"]
+
+def test_ydl_opts_named_client_and_pot_provider(tmp_path):
+    cfg = Config(whisper_url="http://x/v1",
+                 ytdlp_pot_provider_url="http://pot:4416",
+                 ytdlp_cookies=tmp_path / "cookies.txt")
+    opts = acquire._ydl_opts(cfg, tmp_path, "tv", print)
+    assert opts["extractor_args"]["youtube"] == {"player_client": ["tv"]}
+    assert opts["extractor_args"]["youtubepot-bgutilhttp"] == {
+        "base_url": ["http://pot:4416"]}
+    assert opts["cookiefile"] == str(tmp_path / "cookies.txt")
+
+def _fake_yt_dlp(monkeypatch, behaviour):
+    """Install a stub yt_dlp whose download calls `behaviour(opts)`."""
+    import sys
+    import types
+    seen = []
+
+    class FakeYoutubeDL:
+        def __init__(self, opts):
+            self.opts = opts
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def extract_info(self, url, download):
+            seen.append(self.opts["extractor_args"].get("youtube"))
+            behaviour(self.opts)
+
+    mod = types.ModuleType("yt_dlp")
+    mod.YoutubeDL = FakeYoutubeDL
+    mod.version = types.SimpleNamespace(__version__="2026.08.19")
+    monkeypatch.setitem(sys.modules, "yt_dlp", mod)
+    return seen
+
+def test_download_falls_through_to_the_next_client(tmp_path, monkeypatch):
+    def behaviour(opts):
+        client = opts["extractor_args"].get("youtube")
+        if client is None:
+            raise RuntimeError("HTTP Error 403: Forbidden")
+        (tmp_path / "source_video.webm").write_bytes(b"v")
+    seen = _fake_yt_dlp(monkeypatch, behaviour)
+    cfg = Config(whisper_url="http://x/v1", ytdlp_clients=["default", "tv"])
+    logged = []
+    video, thumb = acquire.download_youtube("https://yt/x", tmp_path, cfg,
+                                            logged.append)
+    assert video.name == "source_video.webm"
+    assert thumb is None
+    assert seen == [None, {"player_client": ["tv"]}]
+    assert any("403" in m for m in logged)
+
+def test_download_reports_version_and_clients_when_all_fail(tmp_path, monkeypatch):
+    import pytest
+    from songtrace.pipeline import PipelineError
+    def behaviour(opts):
+        raise RuntimeError("HTTP Error 403: Forbidden")
+    _fake_yt_dlp(monkeypatch, behaviour)
+    cfg = Config(whisper_url="http://x/v1", ytdlp_clients=["default", "tv"])
+    with pytest.raises(PipelineError) as e:
+        acquire.download_youtube("https://yt/x", tmp_path, cfg, lambda m: None)
+    assert "2026.08.19" in str(e.value)
+    assert "default, tv" in str(e.value)
+    assert "403" in str(e.value)
+
+def test_download_with_no_configured_clients_still_tries_default(tmp_path, monkeypatch):
+    seen = _fake_yt_dlp(
+        monkeypatch, lambda opts: (tmp_path / "source_video.mp4").write_bytes(b"v"))
+    cfg = Config(whisper_url="http://x/v1", ytdlp_clients=[])
+    acquire.download_youtube("https://yt/x", tmp_path, cfg, lambda m: None)
+    assert seen == [None]
+
+def test_ydl_log_drops_debug_lines():
+    logged = []
+    log = acquire._YdlLog(logged.append)
+    log.debug("[debug] internal detail")
+    log.debug("[youtube] Extracting URL")
+    log.warning("nsig extraction failed")
+    log.error("HTTP Error 403: Forbidden")
+    assert logged == ["[youtube] Extracting URL", "nsig extraction failed",
+                      "HTTP Error 403: Forbidden"]
