@@ -140,18 +140,18 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
     def _prepare_rebuild(job: Job, log) -> str | None:
         """Relocate cached work and report the stage this rebuild restarts from."""
-        if job.force_stage:
-            log(f"[rebuild] restarting from {job.force_stage} (forced rebuild from scratch)")
-            return job.force_stage
         if not job.rebuilt_from:
-            return None
+            return job.force_stage
         with lock:
             parent = jobs.get(job.rebuilt_from)
         if parent is None:
-            return None
-        force_from = rebuild_policy.plan(parent.inp, job.inp)
+            return job.force_stage
+        planned = rebuild_policy.plan(parent.inp, job.inp)
         changed = rebuild_policy.changed_fields(parent.inp, job.inp)
         rebuild_policy.relocate_work(parent.inp, job.inp, cfg)
+        # a stage the operator asked for can only widen what plan() decided,
+        # which is how "redo the packaging" reaches work nothing invalidated
+        force_from = rebuild_policy.earliest(planned, job.force_stage)
         log(f"[rebuild] restarting from {force_from or 'the first incomplete stage'}"
             f" ({', '.join(changed) if changed else 'nothing'} changed)")
         return force_from
@@ -248,6 +248,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                       cover: UploadFile | None = File(None)):
         youtube_url, genre, language = (youtube_url or None, genre or None,
                                         language or None)
+        lyrics = lyrics.replace("\r\n", "\n")
         has_video = bool(video and video.filename)
         if bool(youtube_url) == has_video:
             raise HTTPException(400, "provide exactly one of youtube_url / video")
@@ -293,13 +294,20 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                       lyrics: str = Form(...), youtube_url: str | None = Form(None),
                       genre: str | None = Form(None), year: int | None = Form(None),
                       language: str | None = Form(None), bpm: float | None = Form(None),
+                      force_from: str | None = Form(None),
                       video: UploadFile | None = File(None),
                       cover: UploadFile | None = File(None)):
         parent = _finished_job(job_id)
+        force_from = force_from or None
+        if force_from is not None and force_from not in STAGE_ORDER:
+            raise HTTPException(400, f"unknown stage {force_from!r}")
         # a cleared field arrives as "" from some clients; "" and None must not
         # look like different inputs to plan()
         youtube_url, genre, language = (youtube_url or None, genre or None,
                                         language or None)
+        # a browser submits a textarea with CRLF; without this every rebuild
+        # from the page looks like a lyrics edit and redoes the alignment
+        lyrics = lyrics.replace("\r\n", "\n")
         has_video = bool(video and video.filename)
         if youtube_url and has_video:
             raise HTTPException(400, "provide exactly one of youtube_url / video")
@@ -317,8 +325,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                         youtube_url=youtube_url, video_path=video_path,
                         genre=genre, year=year, language=language,
                         cover_path=cover_path, bpm_override=bpm)
-        _require_source(parent.inp, inp, rebuild_policy.plan(parent.inp, inp))
-        return _enqueue(new_id, inp, rebuilt_from=job_id)
+        _require_source(parent.inp, inp, rebuild_policy.earliest(
+            rebuild_policy.plan(parent.inp, inp), force_from))
+        return _enqueue(new_id, inp, rebuilt_from=job_id, force_stage=force_from)
 
     @app.get("/api/stages")
     def list_stages():

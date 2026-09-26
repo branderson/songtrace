@@ -200,6 +200,8 @@ body {
 .song-form-lyrics textarea { height: 100%; flex: 1 1 auto; }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .field { display: flex; flex-direction: column; gap: 6px; }
+/* [hidden] is only display:none, which the rule above would otherwise win */
+.field[hidden], .keep-note[hidden] { display: none; }
 .field > span {
   font-family: var(--font-display);
   font-weight: 600;
@@ -534,6 +536,10 @@ button { cursor: pointer; }
           <label class="field"><span>YouTube URL</span><input name="youtube_url"></label>
           <label class="field"><span>Video file</span><input type="file" name="video"></label>
           <p class="keep-note" data-keep="video" hidden></p>
+          <label class="field" id="restart-field" hidden>
+            <span>Restart from</span>
+            <select name="force_from"></select>
+          </label>
           <details>
             <summary>Advanced</summary>
             <div class="stack">
@@ -605,6 +611,9 @@ const formHeading = document.querySelector("#new-song h2");
 const submitButton = form.querySelector("button[type=submit]");
 let rebuildOf = null;
 let formDirty = false;
+// set by CREATE SONG: the page is a blank sheet on purpose, so the poll must
+// not quietly select the newest song back into it
+let composing = false;
 let JOBS = [];
 let selectedId = null;
 let STAGES = [];
@@ -642,6 +651,7 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   selectedId = (await resp.json()).id;
+  composing = false;
   // the fields stay as submitted: the song just sent is the obvious starting
   // point for the next one, and nothing has to be retyped to correct it. The
   // queue's CREATE SONG button is what empties the form.
@@ -676,12 +686,18 @@ for (const input of form.querySelectorAll('input[type="file"]')) {
 // anything of the operator's in there worth warning about first
 form.addEventListener("input", () => { formDirty = true; });
 
-// always available, and the form is usually holding a selected song by now, so
-// this both clears it and brings it back into view from wherever playback
-// scrolled the panel to
+// Always available, and the form is usually holding a selected song by now, so
+// this clears the whole page down to a blank sheet — fields, review, player and
+// queue selection — and brings the form back into view from wherever playback
+// scrolled the panel to. Leaving another song's review under an empty form
+// reads as though the two belong together.
 createSong.addEventListener("click", () => {
   if (formDirty && !confirm("Discard your unsaved edits to this form?")) return;
+  composing = true;
+  selectedId = null;
+  for (const card of jobsDiv.querySelectorAll(".job")) card.removeAttribute("aria-current");
   exitRebuild();
+  clearDetail("nothing selected");
   document.getElementById("new-song").scrollIntoView({ block: "start", behavior: "smooth" });
   form.elements.title.focus();
 });
@@ -759,6 +775,11 @@ function renderJobs(jobs) {
 async function loadStages() {
   const resp = await fetch("/api/stages");
   STAGES = (await resp.json()).stages;
+  // a rebuild redoes only what the edit invalidated, which cannot see a change
+  // in songtrace itself — this is how you redo a stage anyway
+  const select = form.elements.force_from;
+  select.replaceChildren(new Option("only what changed", ""),
+                         ...STAGES.map(s => new Option(s, s)));
 }
 
 function renderStageTrack(job) {
@@ -821,11 +842,11 @@ async function refreshJobs() {
   // deliberately not via selectJob: the auto-selection on load fills the review
   // panel but leaves the form blank, so landing on the page is still the way to
   // start a new song. Clicking a queue entry is what loads its inputs.
-  if (selectedId === null && jobs.length) selectedId = jobs[0].id;
+  if (!composing && selectedId === null && jobs.length) selectedId = jobs[0].id;
   renderJobs(jobs);
   renderNowBar(jobs);
   if (selectedId) refreshDetail();
-  else clearDetail();
+  else clearDetail(composing ? "nothing selected" : undefined);
   schedulePoll(jobs);
 }
 
@@ -833,6 +854,7 @@ async function selectJob(id) {
   // the form already holds this job; reloading it would drop edits in progress
   const reload = id !== rebuildOf;
   if (reload && formDirty && !confirm("Discard your unsaved edits to this form?")) return;
+  composing = false;
   selectedId = id;
   for (const card of jobsDiv.querySelectorAll(".job")) {
     if (card.dataset.id === id) card.setAttribute("aria-current", "true");
@@ -1229,20 +1251,23 @@ function renderOutputPath(job) {
   outputPathDiv.replaceChildren(wrap);
 }
 
-function clearDetail() {
+function clearDetail(why = "no songs queued yet") {
   reviewTitle.replaceChildren();
   reviewError.hidden = true;
   reviewError.textContent = "";
   resetPlayer();
-  document.getElementById("warnings").replaceChildren(
-    emptyNote("no songs queued yet — nothing to review"));
+  // the review box, not an element that no longer exists: getting this wrong
+  // threw partway through and left the rest of the panel showing the old song
+  const box = document.getElementById("lyrics-review");
+  delete box.dataset.jobId;
+  box.replaceChildren(emptyNote(`${why} — nothing to review`));
   outputPathDiv.replaceChildren();
   reviewActions.replaceChildren();
   delete reviewActions.dataset.jobId;
   reviewLineage.replaceChildren();
   reviewLineage.hidden = true;
   delete reviewLineage.dataset.jobId;
-  detail.textContent = "no songs queued yet — nothing to log";
+  detail.textContent = `${why} — nothing to log`;
 }
 
 // a rebuild is refused with 409 until the job settles, so the form says so
@@ -1258,6 +1283,9 @@ function setFormMode(inp, status) {
   formHeading.textContent = rebuildOf ? "REBUILD" : "NEW SONG";
   submitButton.textContent = rebuildOf ? "REBUILD SONG" : "CREATE SONG";
   setSubmitLock(status);
+  // only a rebuild has stages to restart from; a new song always runs them all
+  document.getElementById("restart-field").hidden = !rebuildOf;
+  if (!rebuildOf) form.elements.force_from.value = "";
   for (const [field, key] of [["video", "video_filename"], ["cover", "cover_filename"]]) {
     const note = form.querySelector(`[data-keep="${field}"]`);
     const kept = rebuildOf && inp ? inp[key] : null;

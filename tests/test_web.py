@@ -624,6 +624,12 @@ def _rebuild_flaws(html):
         flaws.append("the queue's CREATE SONG button does not clear the form")
     if "formDirty" not in create or "confirm(" not in create:
         flaws.append("the queue's CREATE SONG button discards edits without asking")
+    if "clearDetail(" not in create:
+        flaws.append("CREATE SONG empties the form but leaves the previous "
+                     "song's review and player sitting under it")
+    if "composing" not in create or "composing" not in _fn_body(html, "refreshJobs"):
+        flaws.append("the blank page CREATE SONG made is selected back over by "
+                     "the next poll of the queue")
 
     mode = _fn_body(html, "setFormMode")
     if 'querySelector("details").open' not in mode:
@@ -663,7 +669,7 @@ def test_rebuild_full_and_delete_controls_are_wired_up():
 
 def _empty_state_flaws(html):
     refresh = _fn_body(html, "refreshJobs")
-    if "clearDetail()" not in refresh:
+    if "clearDetail(" not in refresh:
         return ["refreshJobs never resets the panel when no job is selected"]
     return []
 
@@ -768,10 +774,14 @@ MUTATIONS = [
      "  rebuildOf = null;\n  formDirty = false;\n  setFormMode(null, null);\n  refreshJobs();",
      "  exitRebuild();\n  refreshJobs();"),
     (_rebuild_flaws, "create: the queue button no longer clears the form",
-     "  exitRebuild();\n  document.getElementById(\"new-song\")", "  document.getElementById(\"new-song\")"),
+     "  exitRebuild();\n  clearDetail(\"nothing selected\");\n", ""),
+    (_rebuild_flaws, "create: the review is left behind under a blank form",
+     '  clearDetail("nothing selected");\n', ""),
+    (_rebuild_flaws, "create: the next poll selects a song back into the blank page",
+     "  composing = true;\n", ""),
     (_rebuild_flaws, "create: the queue button discards edits without asking",
-     '  if (formDirty && !confirm("Discard your unsaved edits to this form?")) return;\n  exitRebuild();',
-     "  exitRebuild();"),
+     '  if (formDirty && !confirm("Discard your unsaved edits to this form?")) return;\n  composing = true;',
+     "  composing = true;"),
     (_playback_flaws, "playback: sync falls back to the timeupdate event's ~4Hz",
      "syncFrame = media.paused ? null : requestAnimationFrame(pumpPlayback);",
      "syncFrame = null;"),
@@ -793,7 +803,7 @@ MUTATIONS = [
     (_playback_flaws, "playback: the picture is never re-synced to the audio",
      "  slaveVideo(false);\n", ""),
     (_empty_state_flaws, "empty state: clearDetail no longer wired into refreshJobs",
-     "if (selectedId) refreshDetail();\n  else clearDetail();",
+     "if (selectedId) refreshDetail();\n  else clearDetail(composing ? \"nothing selected\" : undefined);",
      "if (selectedId) refreshDetail();"),
 ]
 
@@ -1626,3 +1636,113 @@ def test_review_reports_which_media_the_player_can_load(tmp_path):
     job_id = make_done_job(client, lyrics="hi")
     body = client.get(f"/api/jobs/{job_id}/review").json()
     assert body["media"] == {"audio": True, "video": True, "cover": False}
+
+
+# --- restarting a rebuild from a chosen stage ------------------------------
+
+def force_from_runner_factory(seen):
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        seen.append(force_from)
+        out = cfg.output_dir / song_slug(inp)
+        out.mkdir(parents=True, exist_ok=True)
+        return PipelineResult(output_dir=out)
+    return runner
+
+
+def rebuild_with(client, job_id, **extra):
+    data = {"title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"}
+    data.update(extra)
+    return client.post(f"/api/jobs/{job_id}/rebuild", data=data)
+
+
+def test_rebuild_without_edits_restarts_from_the_stage_asked_for(tmp_path):
+    """The point of the control: a change in songtrace invalidates no field."""
+    seen = []
+    client, _ = make_client(tmp_path, force_from_runner_factory(seen))
+    parent = make_done_job(client)
+    resp = rebuild_with(client, parent, force_from="package")
+    assert resp.status_code == 201
+    wait_status(client, resp.json()["id"], "done")
+    assert seen[-1] == "package"
+
+
+def test_rebuild_without_a_stage_still_plans_from_the_edit(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, force_from_runner_factory(seen))
+    parent = make_done_job(client)
+    resp = rebuild_with(client, parent, lyrics="different words")
+    wait_status(client, resp.json()["id"], "done")
+    assert seen[-1] == "align"
+
+
+def test_an_edit_wins_when_it_invalidates_more_than_the_stage_asked_for(tmp_path):
+    """A choice may widen what is redone, never narrow it below correctness."""
+    seen = []
+    client, _ = make_client(tmp_path, force_from_runner_factory(seen))
+    parent = make_done_job(client)
+    resp = rebuild_with(client, parent, lyrics="different words",
+                        force_from="package")
+    wait_status(client, resp.json()["id"], "done")
+    assert seen[-1] == "align"
+
+
+def test_the_stage_asked_for_wins_when_it_is_earlier_than_the_edit(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, force_from_runner_factory(seen))
+    parent = make_done_job(client)
+    resp = rebuild_with(client, parent, title="Renamed", force_from="separate")
+    wait_status(client, resp.json()["id"], "done")
+    assert seen[-1] == "separate"
+
+
+def test_rebuild_rejects_a_stage_that_is_not_in_the_pipeline(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    parent = make_done_job(client)
+    resp = rebuild_with(client, parent, force_from="deechoing")
+    assert resp.status_code == 400
+    assert "deechoing" in resp.json()["detail"]
+
+
+def test_a_blank_stage_is_the_same_as_not_asking(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, force_from_runner_factory(seen))
+    parent = make_done_job(client)
+    resp = rebuild_with(client, parent, force_from="")
+    wait_status(client, resp.json()["id"], "done")
+    assert seen[-1] is None
+
+
+def test_rebuild_from_scratch_still_restarts_at_the_first_stage(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, force_from_runner_factory(seen))
+    parent = make_done_job(client)
+    resp = client.post(f"/api/jobs/{parent}/rebuild-full")
+    wait_status(client, resp.json()["id"], "done")
+    assert seen[-1] == STAGE_ORDER[0]
+
+
+def test_the_restart_control_offers_every_stage():
+    html = _index_html()
+    assert 'name="force_from"' in html
+    stages = _fn_body(html, "loadStages")
+    assert "force_from" in stages and "STAGES.map" in stages
+    mode = _fn_body(html, "setFormMode")
+    assert "restart-field" in mode, "the control is shown outside rebuild mode"
+
+
+def test_a_textareas_crlf_does_not_read_as_a_lyrics_edit(tmp_path):
+    """Browsers submit textareas with CRLF; the stored lyrics use LF."""
+    seen = []
+    client, _ = make_client(tmp_path, force_from_runner_factory(seen))
+    parent = make_done_job(client, lyrics="one\ntwo")
+    resp = rebuild_with(client, parent, lyrics="one\r\ntwo")
+    wait_status(client, resp.json()["id"], "done")
+    assert seen[-1] is None, "the rebuild redid the alignment for nothing"
+    body = client.get(f"/api/jobs/{resp.json()['id']}/input").json()
+    assert body["lyrics"] == "one\ntwo"
+
+
+def test_submitting_crlf_lyrics_stores_them_with_lf(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    job_id = make_done_job(client, lyrics="one\r\ntwo")
+    assert client.get(f"/api/jobs/{job_id}/input").json()["lyrics"] == "one\ntwo"

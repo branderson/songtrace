@@ -51,8 +51,9 @@ late in the game too.
 The packaged video has its audio track stripped for the same reason. It is the
 same recording as the `#MP3`, so a player that does not mute the video plays
 both at once, a few frames apart, which is heard as an echo. Songs built
-before this change still have it — rebuild them, or check with
-`ffprobe <song>.mp4` for an audio stream.
+before this change still have it — check with `ffprobe <song>.mp4` for an
+audio stream, and rebuild with **Restart from** set to `package` to clear it
+without re-downloading.
 
 ## Configuration
 
@@ -142,8 +143,15 @@ Valid stages, in pipeline order: `acquire`, `separate`, `transcribe`,
 In the web UI this is what selecting a queue entry does: its title, artist,
 lyrics and the rest come back up in the form, so you can adjust them and hit
 REBUILD SONG. Only the stages your edit actually invalidates are rerun —
-fixing a line of lyrics realigns without re-downloading or re-separating. NEW
-SONG INSTEAD clears the form to start a fresh song.
+fixing a line of lyrics realigns without re-downloading or re-separating.
+CREATE SONG, at the top of the queue, clears the page to start a fresh one.
+
+That planning works off the fields you changed, which cannot see a change in
+songtrace itself: after an upgrade, a rebuild of an older song finds every
+stage cached and does nothing. **Restart from** on the rebuild form is the way
+to redo a stage anyway — pick `package` to repackage without re-downloading.
+It can only widen what is rerun, so an edit that invalidates an earlier stage
+still wins.
 
 ## YouTube download failures
 
