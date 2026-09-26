@@ -5,7 +5,12 @@ description = "Generate UltraStar/Melody Mania karaoke songs from a video and re
 requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"
 dependencies = [
-    "yt-dlp",
+    # yt-dlp declares no runtime deps of its own; the extras are what make
+    # YouTube work. "default" pulls yt-dlp-ejs (JS challenge solving) and the
+    # requests/urllib3 handlers, "deno" ships the JS runtime that executes it,
+    # and "curl-cffi" provides the --impersonate targets. Without them YouTube
+    # extraction degrades to HTTP 403 on the media URLs.
+    "yt-dlp[default,curl-cffi,deno]",
     "demucs",
     "torch",
     "torchaudio",

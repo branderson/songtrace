@@ -11,3 +11,10 @@ creator = "brad"
 # device = "cuda"
 bind_host = "0.0.0.0"
 # port = 8000
+
+# YouTube downloads. Each player client is tried in order until one works;
+# "default" means whatever yt-dlp currently picks for itself.
+# ytdlp_clients = ["default", "tv"]
+# ytdlp_cookies = "/config/youtube-cookies.txt"  # Netscape cookie jar
+# ytdlp_impersonate = "chrome"                   # TLS fingerprint to present
+# ytdlp_pot_provider_url = "http://bgutil-provider:4416"
