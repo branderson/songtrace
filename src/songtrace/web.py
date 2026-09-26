@@ -19,9 +19,12 @@ from .config import Config
 from .lyrics import normalize_lyrics
 from .pipeline import (STAGE_ORDER, PipelineError, SongInput, read_warnings,
                        run_pipeline, song_slug)
+from .ultrastar import get_header, parse_ultrastar
 
 STATIC = Path(__file__).parent / "static"
 STAGE_LINE = re.compile(r"^\[(\w+)\] (?:running|cached, skipping)")
+# the song folder names its own media, exactly as the game reads it
+MEDIA_HEADERS = {"audio": "MP3", "video": "VIDEO", "cover": "COVER"}
 
 
 @dataclass
@@ -376,6 +379,35 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         shutil.rmtree(cfg.work_dir / slug, ignore_errors=True)
         shutil.rmtree(cfg.output_dir / slug, ignore_errors=True)
 
+    def _resolve_media(job: Job, header: str) -> Path | None:
+        """The file a song folder's #MP3/#VIDEO/#COVER header points at."""
+        slug = song_slug(job.inp)
+        out = (cfg.output_dir / slug).resolve()
+        txt = out / f"{slug}.txt"
+        if not txt.exists():
+            return None
+        name = get_header(parse_ultrastar(txt.read_text(encoding="utf-8")), header)
+        if not name:
+            return None
+        # a header names a file in the song folder and nothing else
+        path = (out / name).resolve()
+        if path.parent != out or not path.is_file():
+            return None
+        return path
+
+    @app.get("/api/jobs/{job_id}/media/{kind}")
+    def get_media(job_id: str, kind: str):
+        header = MEDIA_HEADERS.get(kind)
+        if header is None:
+            raise HTTPException(404)
+        job = _finished_job(job_id)
+        if job.status != "done":
+            raise HTTPException(404)
+        path = _resolve_media(job, header)
+        if path is None:
+            raise HTTPException(404)
+        return FileResponse(path)
+
     @app.get("/api/jobs/{job_id}/review")
     def get_review(job_id: str):
         job = _finished_job(job_id)
@@ -406,7 +438,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         lines = [{"index": i, "text": " ".join(words), "dropped": i in dropped,
                   "notes": by_line.get(i, []), "words": words_by_line.get(i, [])}
                  for i, words in enumerate(ref.lines)]
-        return {"lines": lines, "missing_spans": missing_spans}
+        media = {kind: _resolve_media(job, header) is not None
+                 for kind, header in MEDIA_HEADERS.items()}
+        return {"lines": lines, "missing_spans": missing_spans, "media": media}
 
     return app
 

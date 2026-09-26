@@ -584,11 +584,19 @@ def _submit_body(html):
     return html[start:html.index("\n});\n", start)]
 
 
+def _listener_body(html, prefix):
+    start = html.index(prefix)
+    return html[start:html.index("\n});\n", start)]
+
+
 def _rebuild_flaws(html):
     """Ways rebuild mode could quietly stop working."""
     flaws, submit = [], _submit_body(html)
     if "rebuildOf ?" not in submit or "/rebuild" not in submit:
         flaws.append("the form always posts to /api/jobs, so edits create a new song")
+    if "form.reset()" in submit or "exitRebuild()" in submit:
+        flaws.append("a successful submission empties the form, so correcting "
+                     "or varying the song just sent means retyping it")
 
     actions = _fn_body(html, "renderActions")
     if not re.search(r"if \(.*dataset\.jobId === job\.id.*\) return;", actions):
@@ -608,6 +616,14 @@ def _rebuild_flaws(html):
 
     if "if (rebuildOf === id) exitRebuild();" not in _fn_body(html, "deleteJob"):
         flaws.append("deleting the loaded job leaves the form pointed at it")
+
+    # selecting a queue entry loads it, so the sidebar button is now the only
+    # way back to a blank form
+    create = _listener_body(html, 'createSong.addEventListener("click"')
+    if "exitRebuild()" not in create:
+        flaws.append("the queue's CREATE SONG button does not clear the form")
+    if "formDirty" not in create or "confirm(" not in create:
+        flaws.append("the queue's CREATE SONG button discards edits without asking")
 
     mode = _fn_body(html, "setFormMode")
     if 'querySelector("details").open' not in mode:
@@ -656,6 +672,54 @@ def test_review_panel_resets_when_no_job_is_selected():
     assert _empty_state_flaws(_index_html()) == []
 
 
+def _playback_flaws(html):
+    """Ways the review could stop tracking the media element."""
+    flaws = []
+    source = _fn_body(html, "setPlayerSource")
+    if "media/audio" not in source:
+        flaws.append("the player is not pointed at the job's packaged audio, "
+                     "which is the file the game plays and the notes track")
+    if "media/video" not in source:
+        flaws.append("the packaged video is never shown alongside the audio")
+
+    # the mp3 and the video carry the same recording; playing both is an echo
+    if not re.search(r"<video[^>]*\bmuted\b", html):
+        flaws.append("the background video is not muted, so its own audio "
+                     "plays on top of the mp3")
+    pump = _fn_body(html, "pumpPlayback")
+    if "slaveVideo(" not in pump:
+        flaws.append("the picture is never pulled back onto the audio clock, "
+                     "so it drifts out of sync over a long song")
+
+    if "requestAnimationFrame" not in _fn_body(html, "pumpPlayback"):
+        flaws.append("sync is not driven by the frame loop, so the playhead "
+                     "steps at timeupdate's ~4Hz instead of following the audio")
+
+    if "media.paused" not in _fn_body(html, "focusActive"):
+        flaws.append("the view is scrolled even while paused, fighting a reader "
+                     "who scrolled away to look at something else")
+
+    sync = _fn_body(html, "syncPlayback")
+    if "clearEntry(" not in sync:
+        flaws.append("the line the playhead left keeps its highlight")
+    clear = _fn_body(html, "clearEntry")
+    for name in ("review-word-sung", "review-word-active", "review-line-active"):
+        if name not in clear:
+            flaws.append(f"{name} is never taken off a line the playhead left")
+
+    # every branch that gives up on rendering a review has to unload the media
+    # too, or the previous song stays loaded and playable under the new one
+    render = _fn_body(html, "renderLyricsReview")
+    if render.count("resetPlayer()") < render.count("emptyNote("):
+        flaws.append("a review the page cannot render leaves the previous "
+                     "song's media loaded in the player")
+    return flaws
+
+
+def test_review_playback_tracks_the_media_element():
+    assert _playback_flaws(_index_html()) == []
+
+
 # each mutation is a plausible regression; the checker above must reject all of them
 MUTATIONS = [
     (_focus_flaws, "queue: card moved unconditionally",
@@ -700,6 +764,34 @@ MUTATIONS = [
      'form.querySelector("details").open =', "const unusedAdvancedOpen ="),
     (_rebuild_flaws, "prefill: an in-progress job can be submitted for rebuild anyway",
      "submitButton.disabled = locked;", ""),
+    (_rebuild_flaws, "submit: a successful submission empties the form again",
+     "  rebuildOf = null;\n  formDirty = false;\n  setFormMode(null, null);\n  refreshJobs();",
+     "  exitRebuild();\n  refreshJobs();"),
+    (_rebuild_flaws, "create: the queue button no longer clears the form",
+     "  exitRebuild();\n  document.getElementById(\"new-song\")", "  document.getElementById(\"new-song\")"),
+    (_rebuild_flaws, "create: the queue button discards edits without asking",
+     '  if (formDirty && !confirm("Discard your unsaved edits to this form?")) return;\n  exitRebuild();',
+     "  exitRebuild();"),
+    (_playback_flaws, "playback: sync falls back to the timeupdate event's ~4Hz",
+     "syncFrame = media.paused ? null : requestAnimationFrame(pumpPlayback);",
+     "syncFrame = null;"),
+    (_playback_flaws, "playback: the view is scrolled even while paused",
+     "if (!activeEntry || media.paused) return;", "if (!activeEntry) return;"),
+    (_playback_flaws, "playback: the line the playhead left keeps its highlight",
+     "    if (activeEntry) clearEntry(activeEntry);\n", ""),
+    (_playback_flaws, "playback: a word stays lit after the playhead moves on",
+     'w.el.classList.remove("review-word-sung", "review-word-active");',
+     'w.el.classList.remove("review-word-sung");'),
+    (_playback_flaws, "playback: an unrenderable review leaves the old song loaded",
+     "    resetPlayer();\n", ""),
+    (_playback_flaws, "playback: the player is not pointed at the packaged audio",
+     'const src = available?.audio ? `/api/jobs/${job.id}/media/audio` : "";',
+     'const src = "";'),
+    (_playback_flaws, "playback: the background video plays its own audio too",
+     '<video id="player-video" muted playsinline',
+     '<video id="player-video" playsinline'),
+    (_playback_flaws, "playback: the picture is never re-synced to the audio",
+     "  slaveVideo(false);\n", ""),
     (_empty_state_flaws, "empty state: clearDetail no longer wired into refreshJobs",
      "if (selectedId) refreshDetail();\n  else clearDetail();",
      "if (selectedId) refreshDetail();"),
@@ -738,7 +830,7 @@ def test_rebuild_mode_reuses_the_one_form():
 
 def test_index_has_rebuild_hooks():
     html = _index_html()
-    for hook in ("review-actions", "review-lineage", "cancel-rebuild",
+    for hook in ("review-actions", "review-lineage", "create-song",
                  'data-keep="video"', 'data-keep="cover"'):
         assert hook in html, hook
 
@@ -1385,3 +1477,152 @@ def test_review_missing_when_pipeline_never_wrote_notes(tmp_path):
     client, _ = make_client(tmp_path, ok_runner)
     job_id = make_done_job(client)
     assert client.get(f"/api/jobs/{job_id}/review").status_code == 404
+
+
+# --- review playback -------------------------------------------------------
+
+MEDIA_FILES = {"A - T.mp3": b"ID3audio", "A - T.mp4": b"\0\0\0\x18ftypvideo",
+               "A - T.jpg": b"\xff\xd8cover"}
+MEDIA_HEADERS = [("TITLE", "T"), ("ARTIST", "A"), ("MP3", "A - T.mp3"),
+                 ("COVER", "A - T.jpg"), ("VIDEO", "A - T.mp4")]
+
+
+def media_runner_factory(files=None, headers=None, write_txt=True):
+    """A run that leaves behind a song folder, the way package does."""
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        slug = song_slug(inp)
+        out = cfg.output_dir / slug
+        out.mkdir(parents=True, exist_ok=True)
+        for name, body in (MEDIA_FILES if files is None else files).items():
+            (out / name).write_bytes(body)
+        if write_txt:
+            rows = [f"#{k}:{v}" for k, v in
+                    (MEDIA_HEADERS if headers is None else headers)]
+            (out / f"{slug}.txt").write_text("\n".join(rows) + "\n: 0 4 0 la\nE\n",
+                                             encoding="utf-8")
+        return PipelineResult(output_dir=out)
+    return runner
+
+
+def test_media_serves_the_files_the_song_txt_names(tmp_path):
+    client, _ = make_client(tmp_path, media_runner_factory())
+    job_id = make_done_job(client)
+    for kind, name in (("audio", "A - T.mp3"), ("video", "A - T.mp4"),
+                       ("cover", "A - T.jpg")):
+        resp = client.get(f"/api/jobs/{job_id}/media/{kind}")
+        assert resp.status_code == 200, kind
+        assert resp.content == MEDIA_FILES[name], kind
+
+
+def test_media_serves_whatever_the_header_was_rewritten_to(tmp_path):
+    """package transcodes to .mp4 and rewrites #VIDEO; the extension is not fixed."""
+    files = {**MEDIA_FILES, "A - T.webm": b"transcoded"}
+    headers = [(k, "A - T.webm" if k == "VIDEO" else v) for k, v in MEDIA_HEADERS]
+    client, _ = make_client(tmp_path, media_runner_factory(files, headers))
+    job_id = make_done_job(client)
+    assert client.get(f"/api/jobs/{job_id}/media/video").content == b"transcoded"
+
+
+def test_media_supports_range_requests(tmp_path):
+    """Without 206 the browser cannot seek, which is the point of the player."""
+    client, _ = make_client(tmp_path, media_runner_factory())
+    job_id = make_done_job(client)
+    resp = client.get(f"/api/jobs/{job_id}/media/video", headers={"Range": "bytes=0-3"})
+    assert resp.status_code == 206
+    assert resp.headers["content-range"] == f"bytes 0-3/{len(MEDIA_FILES['A - T.mp4'])}"
+    assert resp.content == MEDIA_FILES["A - T.mp4"][:4]
+
+
+def test_media_of_an_unknown_kind_is_404(tmp_path):
+    client, _ = make_client(tmp_path, media_runner_factory())
+    job_id = make_done_job(client)
+    assert client.get(f"/api/jobs/{job_id}/media/instrumental").status_code == 404
+
+
+def test_media_refuses_a_header_pointing_outside_the_song_folder(tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("not yours")
+    headers = [(k, "../../secret.txt" if k == "MP3" else v) for k, v in MEDIA_HEADERS]
+    client, _ = make_client(tmp_path, media_runner_factory(headers=headers))
+    job_id = make_done_job(client)
+    assert client.get(f"/api/jobs/{job_id}/media/audio").status_code == 404
+
+
+def test_media_refuses_an_absolute_header_path(tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("not yours")
+    headers = [(k, str(secret) if k == "MP3" else v) for k, v in MEDIA_HEADERS]
+    client, _ = make_client(tmp_path, media_runner_factory(headers=headers))
+    job_id = make_done_job(client)
+    assert client.get(f"/api/jobs/{job_id}/media/audio").status_code == 404
+
+
+def test_media_404s_when_the_named_file_is_missing(tmp_path):
+    client, _ = make_client(tmp_path, media_runner_factory(files={}))
+    job_id = make_done_job(client)
+    assert client.get(f"/api/jobs/{job_id}/media/audio").status_code == 404
+
+
+def test_media_404s_when_the_header_was_dropped(tmp_path):
+    """package strips #COVER when there is no usable cover image."""
+    headers = [(k, v) for k, v in MEDIA_HEADERS if k != "COVER"]
+    client, _ = make_client(tmp_path, media_runner_factory(headers=headers))
+    job_id = make_done_job(client)
+    assert client.get(f"/api/jobs/{job_id}/media/cover").status_code == 404
+    assert client.get(f"/api/jobs/{job_id}/media/audio").status_code == 200
+
+
+def test_media_404s_when_there_is_no_song_txt(tmp_path):
+    client, _ = make_client(tmp_path, media_runner_factory(write_txt=False))
+    job_id = make_done_job(client)
+    assert client.get(f"/api/jobs/{job_id}/media/audio").status_code == 404
+
+
+def test_media_of_a_failed_job_is_404(tmp_path):
+    def bad_runner(*a, **kw):
+        raise PipelineError("boom")
+    client, _ = make_client(tmp_path, bad_runner)
+    job_id = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"}).json()["id"]
+    wait_status(client, job_id, "failed")
+    assert client.get(f"/api/jobs/{job_id}/media/audio").status_code == 404
+
+
+def test_media_of_a_running_job_is_409(tmp_path):
+    release = threading.Event()
+
+    def blocking(inp, cfg, log=print, force_from=None, stages=None):
+        release.wait(5)
+        return PipelineResult(output_dir=cfg.output_dir / "X")
+
+    client, _ = make_client(tmp_path, blocking)
+    job_id = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"}).json()["id"]
+    try:
+        wait_status(client, job_id, "running")
+        assert client.get(f"/api/jobs/{job_id}/media/audio").status_code == 409
+    finally:
+        release.set()
+    wait_status(client, job_id, "done")
+
+
+def test_media_of_an_unknown_job_is_404(tmp_path):
+    client, _ = make_client(tmp_path, media_runner_factory())
+    assert client.get("/api/jobs/nope/media/audio").status_code == 404
+
+
+def test_review_reports_which_media_the_player_can_load(tmp_path):
+    notes = [{"start": 1.0, "duration": 0.4, "pitch": 0, "text": "hi",
+              "low_confidence": False, "line_index": 0}]
+    review = review_runner_factory(notes)
+    media = media_runner_factory(headers=[(k, v) for k, v in MEDIA_HEADERS
+                                          if k != "COVER"])
+
+    def runner(inp, cfg, **kw):
+        media(inp, cfg, **kw)
+        return review(inp, cfg, **kw)
+
+    client, _ = make_client(tmp_path, runner)
+    job_id = make_done_job(client, lyrics="hi")
+    body = client.get(f"/api/jobs/{job_id}/review").json()
+    assert body["media"] == {"audio": True, "video": True, "cover": False}

@@ -34,6 +34,26 @@ printing the low-confidence regions it found (e.g.
 editor such as [Yass](https://www.yass-along.com/) or
 [USDX](https://usdx.eu/) and touch those spots up before playing.
 
+## Reviewing a song
+
+The web UI plays the finished song folder back against the review, so you can
+check the timing without loading it into a game first. Pick a song in the
+queue and the review panel gets the packaged video with a transport above the
+lyrics; as it plays, the line being sung is highlighted, words light up as
+they are reached, and a playhead sweeps each line against its notes. Click any
+line or word to play from there.
+
+Playback is modelled on the game: the `#MP3` is the audio and the clock, and
+the `#VIDEO` is muted background slaved to it. It also uses the same seconds
+the notes were generated from, so a word that lights up late in the browser is
+late in the game too.
+
+The packaged video has its audio track stripped for the same reason. It is the
+same recording as the `#MP3`, so a player that does not mute the video plays
+both at once, a few frames apart, which is heard as an echo. Songs built
+before this change still have it — rebuild them, or check with
+`ffprobe <song>.mp4` for an audio stream.
+
 ## Configuration
 
 Config is TOML. Resolution order:
@@ -168,7 +188,9 @@ rather than starting over.
 ## Regenerating the web UI screenshot
 
 `scripts/screenshot_webui.py` seeds the real app with a fixed set of jobs
-covering every status and screenshots it to `docs/images/webui.png`:
+covering every status and screenshots it to `docs/images/webui.png`. It uses
+`ffmpeg` to give the selected song a playable folder so the shot includes the
+player; without `ffmpeg` on `PATH` it still runs, just without it.
 
 ```sh
 pip install -e '.[dev]'

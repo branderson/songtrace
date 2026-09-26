@@ -7,6 +7,8 @@ One-time setup: pip install -e '.[dev]' && playwright install chromium
 Run: python scripts/screenshot_webui.py
 """
 import json
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -110,6 +112,7 @@ SONGS = [
     ("Vampire in the Corner", "Magdalena Bay", "queued", {}),
 ]
 SELECTED = "Greensleeves"
+REVIEW_HEADING = "REVIEW"
 
 running_event = threading.Event()
 
@@ -157,14 +160,42 @@ def make_runner():
     return runner
 
 
-def start_server(tmp_path: Path) -> str:
+def start_server(tmp_path: Path) -> tuple[str, Config]:
     cfg = Config(whisper_url="http://localhost:9000/v1", output_dir=tmp_path / "out",
                  work_dir=tmp_path / "work", bind_host="127.0.0.1", port=8811)
     app = create_app(cfg, runner=make_runner())
     server = uvicorn.Server(uvicorn.Config(app, host=cfg.bind_host, port=cfg.port,
                                             log_level="warning"))
     threading.Thread(target=server.run, daemon=True).start()
-    return f"http://{cfg.bind_host}:{cfg.port}"
+    return f"http://{cfg.bind_host}:{cfg.port}", cfg
+
+
+def install_media(cfg: Config) -> bool:
+    """Give the selected song a playable folder, so the shot shows the player.
+
+    A flat fill rather than a test pattern: the point is the transport and the
+    lyric tracking underneath it, not the picture. Skipped without ffmpeg.
+    """
+    if shutil.which("ffmpeg") is None:
+        print("ffmpeg not found; screenshotting without the player")
+        return False
+    artist, title = next((a, t) for t, a, _, _ in SONGS if t == SELECTED)
+    slug = f"{artist} - {title}"
+    out = cfg.output_dir / slug
+    out.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+         "-i", "color=c=0x1A1430:s=640x360:d=60", "-c:v", "libx264",
+         "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-an",
+         str(out / f"{slug}.mp4")], check=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+         "-i", "anullsrc=r=44100:cl=stereo:d=60", "-b:a", "64k",
+         str(out / f"{slug}.mp3")], check=True)
+    (out / f"{slug}.txt").write_text(
+        f"#TITLE:{title}\n#ARTIST:{artist}\n#MP3:{slug}.mp3\n#VIDEO:{slug}.mp4\n"
+        f"#BPM:240\n#GAP:10000\n: 0 4 16 Alas,\nE\n", encoding="utf-8")
+    return True
 
 
 def seed_jobs(base_url: str) -> None:
@@ -187,13 +218,25 @@ def seed_jobs(base_url: str) -> None:
                 time.sleep(0.05)
 
 
-def capture(base_url: str) -> None:
+def capture(base_url: str, with_player: bool) -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page = browser.new_page(viewport={"width": 1280, "height": 1000})
         page.goto(base_url, wait_until="networkidle")
         page.get_by_text(SELECTED, exact=True).click()
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(500)
+        if with_player:
+            # paused mid-line, so the shot carries the playhead and the sung /
+            # current word colouring rather than an untouched transport
+            page.evaluate("document.getElementById('player-media').currentTime = 11.6")
+            page.wait_for_timeout(400)
+            # scrolled to the review: the player pins to the top of #main and
+            # the tracked lines sit under it, which is the panel in use
+            page.evaluate("""() => {
+              const main = document.getElementById('main');
+              main.scrollTo(0, document.getElementById('review').offsetTop - 12);
+            }""")
+            page.wait_for_timeout(400)
         OUT_IMAGE.parent.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(OUT_IMAGE))
         browser.close()
@@ -201,10 +244,11 @@ def capture(base_url: str) -> None:
 
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        base_url = start_server(Path(tmp))
+        base_url, cfg = start_server(Path(tmp))
         time.sleep(1)
         seed_jobs(base_url)
-        capture(base_url)
+        with_player = install_media(cfg)
+        capture(base_url, with_player)
     print(f"wrote {OUT_IMAGE}")
 
 
