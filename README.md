@@ -119,6 +119,12 @@ songtrace make --title "..." --artist "..." --lyrics lyrics.txt \
 Valid stages, in pipeline order: `acquire`, `separate`, `transcribe`,
 `align`, `pitch`, `notes`, `grid`, `package`.
 
+In the web UI this is what selecting a queue entry does: its title, artist,
+lyrics and the rest come back up in the form, so you can adjust them and hit
+REBUILD SONG. Only the stages your edit actually invalidates are rerun —
+fixing a line of lyrics realigns without re-downloading or re-separating. NEW
+SONG INSTEAD clears the form to start a fresh song.
+
 ## YouTube download failures
 
 `HTTP Error 403: Forbidden` from the acquire stage means YouTube served the
