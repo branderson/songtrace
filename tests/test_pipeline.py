@@ -53,3 +53,49 @@ def test_read_warnings_is_empty_without_a_notes_file(tmp_path):
 def test_read_warnings_reads_the_notes_file(tmp_path):
     (tmp_path / "notes_sec.json").write_text(json.dumps({"warnings": ["w1", "w2"]}))
     assert read_warnings(tmp_path) == ["w1", "w2"]
+
+def test_gpu_is_released_after_every_stage(tmp_path, monkeypatch):
+    """Not just at the end: a later stage may wait minutes on the Whisper server."""
+    from songtrace import models
+    cfg, inp, calls = make_cfg(tmp_path), make_inp(), []
+    monkeypatch.setattr(models, "release", lambda: calls.append("release"))
+    stages = [fake_stage("s1", calls), fake_stage("s2", calls)]
+    run_pipeline(inp, cfg, log=lambda m: None, stages=stages)
+    assert calls == ["s1", "release", "s2", "release"]
+
+def test_gpu_is_released_when_a_stage_fails(tmp_path, monkeypatch):
+    import pytest
+    from songtrace import models
+    from songtrace.pipeline import PipelineError
+    cfg, inp, calls = make_cfg(tmp_path), make_inp(), []
+    monkeypatch.setattr(models, "release", lambda: calls.append("release"))
+    def boom(ctx):
+        raise PipelineError("boom")
+    stages = [Stage(name="s1", outputs=lambda ctx: [ctx.work / "s1.done"], run=boom)]
+    with pytest.raises(PipelineError):
+        run_pipeline(inp, cfg, log=lambda m: None, stages=stages)
+    assert calls == ["release"]
+
+def test_a_cached_stage_does_not_pay_for_a_release(tmp_path, monkeypatch):
+    from songtrace import models
+    cfg, inp, calls = make_cfg(tmp_path), make_inp(), []
+    stages = [fake_stage("s1", calls)]
+    run_pipeline(inp, cfg, log=lambda m: None, stages=stages)
+    calls.clear()
+    monkeypatch.setattr(models, "release", lambda: calls.append("release"))
+    run_pipeline(inp, cfg, log=lambda m: None, stages=stages)
+    assert calls == []
+
+def test_a_release_that_freed_memory_is_reported_in_the_log(tmp_path, monkeypatch):
+    from songtrace import models
+    cfg, inp, lines = make_cfg(tmp_path), make_inp(), []
+    monkeypatch.setattr(models, "release", lambda: 512 * 2 ** 20)
+    run_pipeline(inp, cfg, log=lines.append, stages=[fake_stage("s1", [])])
+    assert "[s1] released 512 MiB of GPU memory" in lines
+
+def test_a_release_that_freed_nothing_stays_out_of_the_log(tmp_path, monkeypatch):
+    from songtrace import models
+    cfg, inp, lines = make_cfg(tmp_path), make_inp(), []
+    monkeypatch.setattr(models, "release", lambda: 0)
+    run_pipeline(inp, cfg, log=lines.append, stages=[fake_stage("s1", [])])
+    assert not any("released" in line for line in lines)

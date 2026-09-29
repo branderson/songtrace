@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from . import models
 from .config import Config
 
 class PipelineError(Exception):
@@ -74,6 +75,14 @@ def run_pipeline(inp: SongInput, cfg: Config, log=print,
             log(f"[{stage.name}] cached, skipping")
             continue
         log(f"[{stage.name}] running")
-        stage.run(ctx)
+        # per stage rather than per job: each model is used by one stage, so
+        # holding it past that only keeps VRAM from whatever else wants it
+        try:
+            stage.run(ctx)
+        finally:
+            # logged only when it actually gave something back, so the line is
+            # evidence rather than noise on a box where this matters
+            if freed := models.release():
+                log(f"[{stage.name}] released {freed / 2**20:.0f} MiB of GPU memory")
     return PipelineResult(output_dir=cfg.output_dir / song_slug(inp),
                           warnings=read_warnings(work))

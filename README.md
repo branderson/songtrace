@@ -87,6 +87,30 @@ Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)
 installed on the host; `docker-compose.yml` requests one GPU via the
 `nvidia` device driver.
 
+## Sharing the GPU
+
+`songtrace serve` is long-lived but only wants the GPU in bursts, so it hands
+it back after every stage rather than holding it for the life of the process.
+Three stages load a model — `separate` (Demucs), `align` (wav2vec2) and
+`pitch` (torchcrepe) — and each one's weights are dropped as soon as that
+stage finishes, followed by `torch.cuda.empty_cache()` to return the
+allocator's freed blocks to the driver instead of keeping them for reuse. This
+matters most between `separate` and `align`: `transcribe` sits between them
+waiting on your Whisper server, which can be minutes of a GPU nothing is
+using.
+
+Stages that gave memory back say so in the job log:
+
+```
+[separate] released 3704 MiB of GPU memory
+```
+
+The cost is reloading each model once per job instead of once per process,
+which is seconds against stages that run for minutes. What this does not
+release is the CUDA context itself, a few hundred MB that belongs to the
+process until it exits; freeing that would mean running each stage in a
+subprocess. If you need every last MB back, stop the container between runs.
+
 ## Bare-metal
 
 ```sh
