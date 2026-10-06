@@ -1,8 +1,21 @@
+import sys
 from pathlib import Path
 
 import numpy as np
 
+from ..models import on_release
 from ..pipeline import Ctx, Stage
+
+
+@on_release
+def unload_model() -> None:
+    """torchcrepe caches its model as attributes on its own infer function."""
+    torchcrepe = sys.modules.get("torchcrepe")
+    if torchcrepe is None:
+        return
+    for attr in ("model", "capacity"):
+        if hasattr(torchcrepe.infer, attr):
+            delattr(torchcrepe.infer, attr)
 
 
 def track_pitch(vocals_path: Path, model: str, device: str):

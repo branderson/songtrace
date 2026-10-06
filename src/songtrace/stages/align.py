@@ -2,11 +2,14 @@ import json
 from pathlib import Path
 
 from ..lyrics import alignment_token, normalize_lyrics
+from ..models import on_release
 from ..pipeline import Ctx, PipelineError, Stage
 from .transcribe import classify_lyrics_match, load_transcript, lyrics_similarity, vocal_sections
 
 SIMILARITY_THRESHOLD = 0.4
 
+# a stage aligns section by section, so the model is cached across the calls
+# within one run and dropped at the end of it
 _model_cache = {}
 
 
@@ -15,6 +18,11 @@ def _get_model(device: str):
         from torchaudio.pipelines import MMS_FA as bundle
         _model_cache[device] = bundle.get_model().to(device)
     return _model_cache[device]
+
+
+@on_release
+def unload_model() -> None:
+    _model_cache.clear()
 
 
 def force_align_section(vocals_path: Path, start: float, end: float,
