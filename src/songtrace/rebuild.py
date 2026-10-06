@@ -38,6 +38,17 @@ def plan(old: SongInput, new: SongInput) -> str | None:
     return min((FIELD_STAGE[f] for f in changed), key=STAGE_ORDER.index)
 
 
+def earliest(*stages: str | None) -> str | None:
+    """The earliest of the stages given, ignoring None ("nothing forced").
+
+    An operator's explicit choice is combined with plan()'s rather than
+    replacing it: the planner's stage is the latest that is still correct for
+    the edit, so a choice may only ever redo more.
+    """
+    named = [s for s in stages if s]
+    return min(named, key=STAGE_ORDER.index) if named else None
+
+
 def relocate_work(old: SongInput, new: SongInput, cfg: Config) -> bool:
     """Move the cached work dir when title/artist changed its slug.
 

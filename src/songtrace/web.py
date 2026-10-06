@@ -19,9 +19,12 @@ from .config import Config
 from .lyrics import normalize_lyrics
 from .pipeline import (STAGE_ORDER, PipelineError, SongInput, read_warnings,
                        run_pipeline, song_slug)
+from .ultrastar import get_header, parse_ultrastar
 
 STATIC = Path(__file__).parent / "static"
 STAGE_LINE = re.compile(r"^\[(\w+)\] (?:running|cached, skipping)")
+# the song folder names its own media, exactly as the game reads it
+MEDIA_HEADERS = {"audio": "MP3", "video": "VIDEO", "cover": "COVER"}
 
 
 @dataclass
@@ -137,18 +140,18 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
     def _prepare_rebuild(job: Job, log) -> str | None:
         """Relocate cached work and report the stage this rebuild restarts from."""
-        if job.force_stage:
-            log(f"[rebuild] restarting from {job.force_stage} (forced rebuild from scratch)")
-            return job.force_stage
         if not job.rebuilt_from:
-            return None
+            return job.force_stage
         with lock:
             parent = jobs.get(job.rebuilt_from)
         if parent is None:
-            return None
-        force_from = rebuild_policy.plan(parent.inp, job.inp)
+            return job.force_stage
+        planned = rebuild_policy.plan(parent.inp, job.inp)
         changed = rebuild_policy.changed_fields(parent.inp, job.inp)
         rebuild_policy.relocate_work(parent.inp, job.inp, cfg)
+        # a stage the operator asked for can only widen what plan() decided,
+        # which is how "redo the packaging" reaches work nothing invalidated
+        force_from = rebuild_policy.earliest(planned, job.force_stage)
         log(f"[rebuild] restarting from {force_from or 'the first incomplete stage'}"
             f" ({', '.join(changed) if changed else 'nothing'} changed)")
         return force_from
@@ -245,6 +248,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                       cover: UploadFile | None = File(None)):
         youtube_url, genre, language = (youtube_url or None, genre or None,
                                         language or None)
+        lyrics = lyrics.replace("\r\n", "\n")
         has_video = bool(video and video.filename)
         if bool(youtube_url) == has_video:
             raise HTTPException(400, "provide exactly one of youtube_url / video")
@@ -290,13 +294,20 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                       lyrics: str = Form(...), youtube_url: str | None = Form(None),
                       genre: str | None = Form(None), year: int | None = Form(None),
                       language: str | None = Form(None), bpm: float | None = Form(None),
+                      force_from: str | None = Form(None),
                       video: UploadFile | None = File(None),
                       cover: UploadFile | None = File(None)):
         parent = _finished_job(job_id)
+        force_from = force_from or None
+        if force_from is not None and force_from not in STAGE_ORDER:
+            raise HTTPException(400, f"unknown stage {force_from!r}")
         # a cleared field arrives as "" from some clients; "" and None must not
         # look like different inputs to plan()
         youtube_url, genre, language = (youtube_url or None, genre or None,
                                         language or None)
+        # a browser submits a textarea with CRLF; without this every rebuild
+        # from the page looks like a lyrics edit and redoes the alignment
+        lyrics = lyrics.replace("\r\n", "\n")
         has_video = bool(video and video.filename)
         if youtube_url and has_video:
             raise HTTPException(400, "provide exactly one of youtube_url / video")
@@ -314,8 +325,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                         youtube_url=youtube_url, video_path=video_path,
                         genre=genre, year=year, language=language,
                         cover_path=cover_path, bpm_override=bpm)
-        _require_source(parent.inp, inp, rebuild_policy.plan(parent.inp, inp))
-        return _enqueue(new_id, inp, rebuilt_from=job_id)
+        _require_source(parent.inp, inp, rebuild_policy.earliest(
+            rebuild_policy.plan(parent.inp, inp), force_from))
+        return _enqueue(new_id, inp, rebuilt_from=job_id, force_stage=force_from)
 
     @app.get("/api/stages")
     def list_stages():
@@ -376,6 +388,35 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         shutil.rmtree(cfg.work_dir / slug, ignore_errors=True)
         shutil.rmtree(cfg.output_dir / slug, ignore_errors=True)
 
+    def _resolve_media(job: Job, header: str) -> Path | None:
+        """The file a song folder's #MP3/#VIDEO/#COVER header points at."""
+        slug = song_slug(job.inp)
+        out = (cfg.output_dir / slug).resolve()
+        txt = out / f"{slug}.txt"
+        if not txt.exists():
+            return None
+        name = get_header(parse_ultrastar(txt.read_text(encoding="utf-8")), header)
+        if not name:
+            return None
+        # a header names a file in the song folder and nothing else
+        path = (out / name).resolve()
+        if path.parent != out or not path.is_file():
+            return None
+        return path
+
+    @app.get("/api/jobs/{job_id}/media/{kind}")
+    def get_media(job_id: str, kind: str):
+        header = MEDIA_HEADERS.get(kind)
+        if header is None:
+            raise HTTPException(404)
+        job = _finished_job(job_id)
+        if job.status != "done":
+            raise HTTPException(404)
+        path = _resolve_media(job, header)
+        if path is None:
+            raise HTTPException(404)
+        return FileResponse(path)
+
     @app.get("/api/jobs/{job_id}/review")
     def get_review(job_id: str):
         job = _finished_job(job_id)
@@ -406,7 +447,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         lines = [{"index": i, "text": " ".join(words), "dropped": i in dropped,
                   "notes": by_line.get(i, []), "words": words_by_line.get(i, [])}
                  for i, words in enumerate(ref.lines)]
-        return {"lines": lines, "missing_spans": missing_spans}
+        media = {kind: _resolve_media(job, header) is not None
+                 for kind, header in MEDIA_HEADERS.items()}
+        return {"lines": lines, "missing_spans": missing_spans, "media": media}
 
     return app
 

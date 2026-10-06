@@ -5,7 +5,7 @@ import pytest
 
 from songtrace.config import Config
 from songtrace.pipeline import STAGE_ORDER, PipelineError, SongInput
-from songtrace.rebuild import (FIELD_STAGE, changed_fields, plan,
+from songtrace.rebuild import (FIELD_STAGE, changed_fields, earliest, plan,
                                    relocate_work, superseded_output)
 
 
@@ -124,3 +124,14 @@ def test_superseded_output_refuses_a_path_outside_the_output_root(tmp_path):
 def test_superseded_output_refuses_the_output_root_itself(tmp_path):
     root = tmp_path / "out"
     assert superseded_output(str(root), str(root / "A - T"), root) is None
+
+
+def test_earliest_picks_the_earlier_stage():
+    assert earliest("package", "separate") == "separate"
+    assert earliest("separate", "package") == "separate"
+
+
+def test_earliest_ignores_unset_stages():
+    assert earliest(None, "grid") == "grid"
+    assert earliest("grid", None) == "grid"
+    assert earliest(None, None) is None

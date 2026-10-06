@@ -111,6 +111,7 @@ body {
 }
 
 #sidebar .eyebrow, #jobs .empty-note { padding: 0 18px; }
+#create-song { display: block; width: calc(100% - 36px); margin: 0 18px 20px; padding: 9px 12px; }
 
 #jobs { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
 
@@ -199,6 +200,8 @@ body {
 .song-form-lyrics textarea { height: 100%; flex: 1 1 auto; }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .field { display: flex; flex-direction: column; gap: 6px; }
+/* [hidden] is only display:none, which the rule above would otherwise win */
+.field[hidden], .keep-note[hidden] { display: none; }
 .field > span {
   font-family: var(--font-display);
   font-weight: 600;
@@ -320,8 +323,27 @@ button { cursor: pointer; }
 }
 #review h3 span { color: var(--text-muted); font-weight: 400; }
 
+/* sticks to the top of #main so the video stays in frame as the lyrics scroll */
+#player { position: sticky; top: 0; z-index: 2; margin: 0 0 14px; padding: 6px 0 10px; background: var(--bg); }
+#player-video {
+  display: block;
+  width: 100%;
+  max-height: 30vh;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+#player-video[hidden] { display: none; }
+/* the native transport renders light otherwise, against everything around it */
+#player-media { display: block; width: 100%; margin-top: 8px; color-scheme: dark; }
+
 #lyrics-review { display: flex; flex-direction: column; gap: 10px; }
 .review-line { padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); }
+.review-line-active { background: var(--panel-raised); border-color: var(--aqua); }
+.review-word-sung { color: var(--text-muted); }
+.review-word-active { color: var(--aqua); font-weight: 600; }
+.review-playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--aqua); }
+.review-seek { cursor: pointer; }
 .review-line-text { display: block; font-size: 0.9rem; }
 .review-line-dropped { opacity: 0.55; }
 .review-line-dropped .review-line-text { text-decoration: line-through; }
@@ -355,7 +377,7 @@ button { cursor: pointer; }
   border: 1px solid var(--border);
 }
 .output-path code { flex: 1; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 0.82rem; }
-#copy-path, .action, #cancel-rebuild {
+#copy-path, .action {
   flex: none;
   padding: 5px 12px;
   font-family: var(--font-display);
@@ -368,7 +390,7 @@ button { cursor: pointer; }
   border: 1px solid var(--control);
   border-radius: 2px;
 }
-#copy-path:hover, .action:hover, #cancel-rebuild:hover { border-color: var(--text-muted); }
+#copy-path:hover, .action:hover { border-color: var(--text-muted); }
 
 .form-actions { display: flex; align-items: center; gap: 14px; }
 .keep-note { margin: -8px 0 0; font-size: 0.78rem; color: var(--aqua); }
@@ -495,6 +517,7 @@ button { cursor: pointer; }
     <div class="kana" aria-hidden="true">カラオケ</div>
   </div>
   <div>
+    <button type="button" id="create-song" class="primary">CREATE SONG</button>
     <h2 class="eyebrow">QUEUE</h2>
     <div id="jobs"></div>
   </div>
@@ -513,6 +536,10 @@ button { cursor: pointer; }
           <label class="field"><span>YouTube URL</span><input name="youtube_url"></label>
           <label class="field"><span>Video file</span><input type="file" name="video"></label>
           <p class="keep-note" data-keep="video" hidden></p>
+          <label class="field" id="restart-field" hidden>
+            <span>Restart from</span>
+            <select name="force_from"></select>
+          </label>
           <details>
             <summary>Advanced</summary>
             <div class="stack">
@@ -533,7 +560,6 @@ button { cursor: pointer; }
       </div>
       <div class="form-actions">
         <button type="submit" class="primary">CREATE SONG</button>
-        <button type="button" id="cancel-rebuild" hidden>NEW SONG INSTEAD</button>
         <p id="form-lock" hidden></p>
       </div>
     </form>
@@ -545,6 +571,10 @@ button { cursor: pointer; }
     <h3 id="review-title"></h3>
     <p id="review-lineage" hidden></p>
     <p id="review-error" class="review-error" hidden></p>
+    <div id="player" hidden>
+      <video id="player-video" muted playsinline preload="metadata"></video>
+      <audio id="player-media" controls preload="metadata"></audio>
+    </div>
     <div id="lyrics-review"><p class="empty-note">no songs queued yet — nothing to review</p></div>
     <div id="output-path"></div>
     <div id="review-actions"></div>
@@ -575,12 +605,15 @@ const nowTitle = document.getElementById("now-title");
 const stageTrack = document.getElementById("stage-track");
 const reviewActions = document.getElementById("review-actions");
 const reviewLineage = document.getElementById("review-lineage");
-const cancelRebuild = document.getElementById("cancel-rebuild");
+const createSong = document.getElementById("create-song");
 const formLock = document.getElementById("form-lock");
 const formHeading = document.querySelector("#new-song h2");
 const submitButton = form.querySelector("button[type=submit]");
 let rebuildOf = null;
 let formDirty = false;
+// set by CREATE SONG: the page is a blank sheet on purpose, so the poll must
+// not quietly select the newest song back into it
+let composing = false;
 let JOBS = [];
 let selectedId = null;
 let STAGES = [];
@@ -615,10 +648,16 @@ form.addEventListener("submit", async (e) => {
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
     formError.textContent = body.detail || `error: ${resp.status}`;
-    return;  // before the reset below, so a rejected submission is never retyped
+    return;
   }
   selectedId = (await resp.json()).id;
-  exitRebuild();
+  composing = false;
+  // the fields stay as submitted: the song just sent is the obvious starting
+  // point for the next one, and nothing has to be retyped to correct it. The
+  // queue's CREATE SONG button is what empties the form.
+  rebuildOf = null;
+  formDirty = false;
+  setFormMode(null, null);
   refreshJobs();
 });
 
@@ -647,7 +686,21 @@ for (const input of form.querySelectorAll('input[type="file"]')) {
 // anything of the operator's in there worth warning about first
 form.addEventListener("input", () => { formDirty = true; });
 
-cancelRebuild.addEventListener("click", exitRebuild);
+// Always available, and the form is usually holding a selected song by now, so
+// this clears the whole page down to a blank sheet — fields, review, player and
+// queue selection — and brings the form back into view from wherever playback
+// scrolled the panel to. Leaving another song's review under an empty form
+// reads as though the two belong together.
+createSong.addEventListener("click", () => {
+  if (formDirty && !confirm("Discard your unsaved edits to this form?")) return;
+  composing = true;
+  selectedId = null;
+  for (const card of jobsDiv.querySelectorAll(".job")) card.removeAttribute("aria-current");
+  exitRebuild();
+  clearDetail("nothing selected");
+  document.getElementById("new-song").scrollIntoView({ block: "start", behavior: "smooth" });
+  form.elements.title.focus();
+});
 
 function jobCard(job) {
   const card = document.createElement("button");
@@ -722,6 +775,11 @@ function renderJobs(jobs) {
 async function loadStages() {
   const resp = await fetch("/api/stages");
   STAGES = (await resp.json()).stages;
+  // a rebuild redoes only what the edit invalidated, which cannot see a change
+  // in songtrace itself — this is how you redo a stage anyway
+  const select = form.elements.force_from;
+  select.replaceChildren(new Option("only what changed", ""),
+                         ...STAGES.map(s => new Option(s, s)));
 }
 
 function renderStageTrack(job) {
@@ -784,11 +842,11 @@ async function refreshJobs() {
   // deliberately not via selectJob: the auto-selection on load fills the review
   // panel but leaves the form blank, so landing on the page is still the way to
   // start a new song. Clicking a queue entry is what loads its inputs.
-  if (selectedId === null && jobs.length) selectedId = jobs[0].id;
+  if (!composing && selectedId === null && jobs.length) selectedId = jobs[0].id;
   renderJobs(jobs);
   renderNowBar(jobs);
   if (selectedId) refreshDetail();
-  else clearDetail();
+  else clearDetail(composing ? "nothing selected" : undefined);
   schedulePoll(jobs);
 }
 
@@ -796,6 +854,7 @@ async function selectJob(id) {
   // the form already holds this job; reloading it would drop edits in progress
   const reload = id !== rebuildOf;
   if (reload && formDirty && !confirm("Discard your unsaved edits to this form?")) return;
+  composing = false;
   selectedId = id;
   for (const card of jobsDiv.querySelectorAll(".job")) {
     if (card.dataset.id === id) card.setAttribute("aria-current", "true");
@@ -873,6 +932,10 @@ function lineTimeline(words, notes, minPitch, span) {
   }
   box.append(wordsRow);
   if (notes.length) box.append(pianoRoll(notes, minPitch, span, t0, t1));
+  const playhead = document.createElement("div");
+  playhead.className = "review-playhead";
+  playhead.hidden = true;
+  box.append(playhead);
   return box;
 }
 
@@ -906,6 +969,21 @@ function lineNode(line, minPitch, span) {
   return row;
 }
 
+// What playback needs from a rendered line: the time range it was laid out
+// over, the word labels along it, and the bar that sweeps across it.
+function lineEntry(row, line) {
+  const laid = line.words.length ? line.words : line.notes;
+  if (!laid.length || line.dropped) return null;
+  const labels = [...row.querySelectorAll(".review-word")];
+  return {
+    row,
+    t0: laid[0].start,
+    t1: Math.max(...laid.map(x => x.end)),
+    words: line.words.map((w, i) => ({ el: labels[i], start: w.start, end: w.end })),
+    playhead: row.querySelector(".review-playhead"),
+  };
+}
+
 function buildLyricsReview(data) {
   const allNotes = data.lines.flatMap(l => l.notes);
   const pitches = allNotes.map(n => n.pitch);
@@ -914,6 +992,7 @@ function buildLyricsReview(data) {
   const span = Math.max(1, maxPitch - minPitch);
   const spans = [...data.missing_spans].sort((a, b) => a.start - b.start);
   const nodes = [];
+  const entries = [];
   let spanIdx = 0;
   for (const line of data.lines) {
     const lineStart = line.notes.length ? Math.min(...line.notes.map(n => n.start)) : null;
@@ -921,24 +1000,172 @@ function buildLyricsReview(data) {
       nodes.push(missingSpanNode(spans[spanIdx]));
       spanIdx++;
     }
-    nodes.push(lineNode(line, minPitch, span));
+    const row = lineNode(line, minPitch, span);
+    const entry = lineEntry(row, line);
+    if (entry) entries.push(entry);
+    nodes.push(row);
   }
   while (spanIdx < spans.length) {
     nodes.push(missingSpanNode(spans[spanIdx]));
     spanIdx++;
   }
-  return nodes;
+  return { nodes, entries };
+}
+
+// The song folder's own media, played against the same seconds the review was
+// built from, so the highlighted line is the one you are hearing.
+//
+// Modelled on the game: #MP3 is the audio and the clock, the video is muted
+// background slaved to it. Playing the video's own audio alongside the mp3 is
+// the same recording twice, a few frames apart, which is heard as an echo.
+const player = document.getElementById("player");
+const media = document.getElementById("player-media");
+const video = document.getElementById("player-video");
+const DRIFT = 0.25;  // seconds before the picture is worth re-seeking
+
+function slaveVideo(force) {
+  if (video.hidden || !video.getAttribute("src")) return;
+  if (force || Math.abs(video.currentTime - media.currentTime) > DRIFT) {
+    video.currentTime = media.currentTime;
+  }
+}
+
+for (const event of ["seeked", "ratechange"]) {
+  media.addEventListener(event, () => {
+    video.playbackRate = media.playbackRate;
+    slaveVideo(true);
+  });
+}
+media.addEventListener("pause", () => video.pause());
+let timeline = [];
+let activeEntry = null;
+let syncFrame = null;
+
+// the first line that has not finished yet: the one being sung, or the one
+// coming up while the track is between lines
+function entryAt(t) {
+  return timeline.find(e => t <= e.t1) ?? timeline[timeline.length - 1] ?? null;
+}
+
+function paintEntry(entry, t) {
+  for (const w of entry.words) {
+    w.el.classList.toggle("review-word-sung", t >= w.end);
+    w.el.classList.toggle("review-word-active", t >= w.start && t < w.end);
+  }
+  if (!entry.playhead) return;
+  const inside = t >= entry.t0 && t <= entry.t1;
+  entry.playhead.hidden = !inside;
+  if (inside) {
+    const frac = (t - entry.t0) / Math.max(entry.t1 - entry.t0, 0.001);
+    entry.playhead.style.left = `${frac * 100}%`;
+  }
+}
+
+function clearEntry(entry) {
+  entry.row.classList.remove("review-line-active");
+  if (entry.playhead) entry.playhead.hidden = true;
+  for (const w of entry.words) {
+    w.el.classList.remove("review-word-sung", "review-word-active");
+  }
+}
+
+function syncPlayback() {
+  const t = media.currentTime;
+  const entry = entryAt(t);
+  if (entry !== activeEntry) {
+    if (activeEntry) clearEntry(activeEntry);
+    activeEntry = entry;
+    if (entry) {
+      entry.row.classList.add("review-line-active");
+      focusActive();
+    }
+  }
+  if (entry) paintEntry(entry, t);
+}
+
+// centred so there is context either side, like a scrolling lyric sheet; only
+// while running, so it does not fight a reader who has scrolled away to look
+// at something else
+function focusActive() {
+  if (!activeEntry || media.paused) return;
+  activeEntry.row.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function pumpPlayback() {
+  syncPlayback();
+  slaveVideo(false);
+  syncFrame = media.paused ? null : requestAnimationFrame(pumpPlayback);
+}
+
+// timeupdate fires about four times a second, too coarse for a playhead
+media.addEventListener("play", () => {
+  if (syncFrame === null) syncFrame = requestAnimationFrame(pumpPlayback);
+  if (!video.hidden && video.getAttribute("src")) video.play().catch(() => {});
+  focusActive();  // the line may already be active from a seek while paused
+});
+for (const event of ["pause", "seeked", "loadedmetadata"]) {
+  media.addEventListener(event, syncPlayback);
+}
+
+function bindTimeline(entries) {
+  if (activeEntry) clearEntry(activeEntry);
+  activeEntry = null;
+  timeline = entries;
+  for (const entry of entries) {
+    entry.row.classList.add("review-seek");
+    entry.row.title = "click to play from here";
+    entry.row.addEventListener("click", (e) => {
+      const word = entry.words.find(w => w.el === e.target);
+      media.currentTime = word ? word.start : entry.t0;
+      if (media.paused) syncPlayback();
+    });
+  }
+}
+
+// Returns true when the folder gave us something to play. #MP3 is required —
+// it is the audio the game uses, so it is the one the review has to track.
+function setPlayerSource(job, available) {
+  const src = available?.audio ? `/api/jobs/${job.id}/media/audio` : "";
+  player.hidden = !src;
+  if (media.dataset.src === src) return !!src;
+  media.dataset.src = src;
+  if (src) media.src = src;
+  else { media.removeAttribute("src"); media.load(); }
+
+  video.hidden = !(src && available.video);
+  video.poster = available?.cover ? `/api/jobs/${job.id}/media/cover` : "";
+  if (!video.hidden) video.src = `/api/jobs/${job.id}/media/video`;
+  else { video.removeAttribute("src"); video.load(); }
+  return !!src;
+}
+
+function resetPlayer() {
+  // the 3s poll reaches here for every running job; reloading a cleared
+  // element each time would be pure churn
+  if (player.hidden && !timeline.length) return;
+  bindTimeline([]);
+  player.hidden = true;
+  media.pause();
+  video.pause();
+  media.dataset.src = "";
+  for (const el of [media, video]) {
+    el.removeAttribute("src");
+    el.removeAttribute("poster");
+    el.load();
+  }
 }
 
 async function renderLyricsReview(job) {
   const box = document.getElementById("lyrics-review");
   if (job.status === "failed") {
     delete box.dataset.jobId;
+    resetPlayer();
     box.replaceChildren(emptyNote("job failed — nothing to review"));
     return;
   }
   if (job.status !== "done") {
     delete box.dataset.jobId;
+    resetPlayer();
     box.replaceChildren(emptyNote("waiting for this song to finish…"));
     return;
   }
@@ -946,6 +1173,7 @@ async function renderLyricsReview(job) {
   const resp = await fetch(`/api/jobs/${job.id}/review`);
   if (job.id !== selectedId) return;
   if (!resp.ok) {
+    resetPlayer();
     box.replaceChildren(emptyNote("no review data available"));
     return;
   }
@@ -953,10 +1181,17 @@ async function renderLyricsReview(job) {
   if (job.id !== selectedId) return;
   box.dataset.jobId = job.id;
   if (!data.lines.length) {
+    resetPlayer();
     box.replaceChildren(emptyNote("no lyrics to review"));
     return;
   }
-  box.replaceChildren(...buildLyricsReview(data));
+  const { nodes, entries } = buildLyricsReview(data);
+  box.replaceChildren(...nodes);
+  // with nothing to play, a highlighted line and a click-to-seek cursor would
+  // both be promising something the song folder cannot deliver
+  const playable = setPlayerSource(job, data.media);
+  bindTimeline(playable ? entries : []);
+  if (playable) syncPlayback();
 }
 
 async function copyPath(path, button) {
@@ -1016,19 +1251,23 @@ function renderOutputPath(job) {
   outputPathDiv.replaceChildren(wrap);
 }
 
-function clearDetail() {
+function clearDetail(why = "no songs queued yet") {
   reviewTitle.replaceChildren();
   reviewError.hidden = true;
   reviewError.textContent = "";
-  document.getElementById("warnings").replaceChildren(
-    emptyNote("no songs queued yet — nothing to review"));
+  resetPlayer();
+  // the review box, not an element that no longer exists: getting this wrong
+  // threw partway through and left the rest of the panel showing the old song
+  const box = document.getElementById("lyrics-review");
+  delete box.dataset.jobId;
+  box.replaceChildren(emptyNote(`${why} — nothing to review`));
   outputPathDiv.replaceChildren();
   reviewActions.replaceChildren();
   delete reviewActions.dataset.jobId;
   reviewLineage.replaceChildren();
   reviewLineage.hidden = true;
   delete reviewLineage.dataset.jobId;
-  detail.textContent = "no songs queued yet — nothing to log";
+  detail.textContent = `${why} — nothing to log`;
 }
 
 // a rebuild is refused with 409 until the job settles, so the form says so
@@ -1043,8 +1282,10 @@ function setSubmitLock(status) {
 function setFormMode(inp, status) {
   formHeading.textContent = rebuildOf ? "REBUILD" : "NEW SONG";
   submitButton.textContent = rebuildOf ? "REBUILD SONG" : "CREATE SONG";
-  cancelRebuild.hidden = !rebuildOf;
   setSubmitLock(status);
+  // only a rebuild has stages to restart from; a new song always runs them all
+  document.getElementById("restart-field").hidden = !rebuildOf;
+  if (!rebuildOf) form.elements.force_from.value = "";
   for (const [field, key] of [["video", "video_filename"], ["cover", "cover_filename"]]) {
     const note = form.querySelector(`[data-keep="${field}"]`);
     const kept = rebuildOf && inp ? inp[key] : null;
@@ -1052,9 +1293,9 @@ function setFormMode(inp, status) {
     note.hidden = !kept;
   }
   // the advanced fields carry into a rebuild whether or not the section is open,
-  // so a job that has any must not hide them behind a closed summary
-  form.querySelector("details").open = !!inp && (!!inp.cover_filename ||
-    ["genre", "year", "language", "bpm"].some(n => form.elements[n].value));
+  // so anything actually set must not sit hidden behind a closed summary
+  form.querySelector("details").open = !!inp?.cover_filename ||
+    ["genre", "year", "language", "bpm"].some(n => form.elements[n].value);
 }
 
 function exitRebuild() {

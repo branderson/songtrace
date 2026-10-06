@@ -51,11 +51,15 @@ def _run(ctx: Ctx) -> None:
     meta = json.loads((ctx.work / "meta.json").read_text())
     src_video = ctx.work / meta["video_file"]
     fmt, codec = ffprobe_codec(src_video)
+    # The video is background only: the song's audio is #MP3, and the two are
+    # the same recording. A player that does not mute the video plays both at
+    # once, which is heard as an echo, so the audio track is dropped here.
     if (fmt, codec) in GOOD_VIDEO:
-        shutil.copyfile(src_video, out / f"{slug}{src_video.suffix}")
+        ffmpeg("-i", str(src_video), "-c", "copy", "-an",
+               str(out / f"{slug}{src_video.suffix}"))
     else:
         ffmpeg("-i", str(src_video), "-c:v", "libx264", "-crf", "20",
-               "-preset", "medium", "-c:a", "aac", str(out / f"{slug}.mp4"))
+               "-preset", "medium", "-an", str(out / f"{slug}.mp4"))
         _set_header(txt, "VIDEO", f"{slug}.mp4")
     cover_src = ctx.inp.cover_path
     if cover_src is None and meta.get("thumbnail"):

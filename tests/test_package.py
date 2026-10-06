@@ -49,17 +49,35 @@ def make_pipeline_inputs(tmp_path, cover=None):
     return inp, cfg
 
 
-def test_package_copies_compatible_video(tmp_path, monkeypatch):
-    monkeypatch.setattr(package, "ffmpeg", lambda *a: Path(a[-1]).write_bytes(b"m"))
+def test_package_remuxes_compatible_video_without_reencoding(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(package, "ffmpeg",
+                        lambda *a: (calls.append(a), Path(a[-1]).write_bytes(b"m")))
     monkeypatch.setattr(package, "ffprobe_codec", lambda p: ("webm", "vp9"))
     ctx = make_ctx(tmp_path, cover=make_cover(tmp_path))
     package.package_stage().run(ctx)
     out = tmp_path / "out" / "A - T"
     assert (out / "A - T.txt").exists()
     assert (out / "A - T.mp3").exists()
-    assert (out / "A - T.webm").read_bytes() == b"v"
+    assert (out / "A - T.webm").exists()
+    video_call = next(c for c in calls if c[-1].endswith("A - T.webm"))
+    assert "-c" in video_call and "copy" in video_call, "the video was re-encoded"
     img = Image.open(out / "A - T.jpg")
     assert img.width == img.height
+
+
+@pytest.mark.parametrize("probe,name", [(("webm", "vp9"), "A - T.webm"),
+                                        (("avi", "mpeg4"), "A - T.mp4")])
+def test_package_strips_the_videos_audio_track(tmp_path, monkeypatch, probe, name):
+    """#MP3 is the song's audio; a video that keeps its own plays as an echo."""
+    calls = []
+    monkeypatch.setattr(package, "ffmpeg",
+                        lambda *a: (calls.append(a), Path(a[-1]).write_bytes(b"m")))
+    monkeypatch.setattr(package, "ffprobe_codec", lambda p: probe)
+    ctx = make_ctx(tmp_path, cover=make_cover(tmp_path))
+    package.package_stage().run(ctx)
+    video_call = next(c for c in calls if c[-1].endswith(name))
+    assert "-an" in video_call
 
 
 def test_package_reencodes_and_rewrites_video_header(tmp_path, monkeypatch):
