@@ -74,7 +74,7 @@ See `config.example.toml` for every available field (`whisper_url`,
 `whisper_api_key`, `whisper_model`, `whisper_api`, `output_dir`, `work_dir`,
 `creator`, `demucs_model`, `crepe_model`, `device`, `bind_host`, `port`,
 `ytdlp_clients`, `ytdlp_cookies`, `ytdlp_impersonate`,
-`ytdlp_pot_provider_url`).
+`ytdlp_pot_provider_url`, `ytdlp_version`).
 
 `whisper_api` selects the wire format: `"openai"` (default) speaks the
 OpenAI-compatible `POST {whisper_url}/audio/transcriptions` API; `"asr-webservice"`
@@ -182,21 +182,24 @@ still wins.
 `HTTP Error 403: Forbidden` from the acquire stage means YouTube served the
 page but refused the media URL. In rough order of likelihood:
 
-1. **yt-dlp is stale.** YouTube changes its defences every few weeks and the
-   version baked into the image does not. Hotfix a running container, then
-   rebuild so it sticks:
+1. **yt-dlp is stale.** YouTube changes its defences every few weeks, so
+   songtrace keeps yt-dlp current itself. Once a day, and again whenever a
+   download fails outright, it checks PyPI for a newer stable release,
+   installs it under `$XDG_CACHE_HOME/songtrace/` (`/data/models/cache` in the
+   container), and tries it before the copy installed with songtrace. That
+   copy is never modified and is always the fallback, so a release that breaks
+   compatibility costs a retry rather than the download. The job log names
+   the yt-dlp version behind each attempt.
 
-   ```sh
-   docker compose exec songtrace pip install -U 'yt-dlp[default,curl-cffi,deno]'
-   docker compose restart songtrace
-   docker compose build --pull songtrace   # permanent
-   ```
+   `ytdlp_version` overrides this: `"bundled"` uses only the installed copy,
+   and a release number such as `"2026.08.19"` pins that release instead of
+   the newest.
 
 2. **Missing JS runtime.** yt-dlp needs `yt-dlp-ejs` plus a JavaScript engine
    to solve YouTube's player challenges; without them it silently falls back to
    formats that 403. The `[default,curl-cffi,deno]` extras in `pyproject.toml`
-   cover this. Check with
-   `docker compose exec songtrace yt-dlp -v --simulate <url>` — the debug
+   cover this, for both the installed copy and the ones fetched at runtime.
+   Check with `docker compose exec songtrace yt-dlp -v --simulate <url>` — the debug
    header must show a `JS runtimes:` line that is not `none`.
 
 3. **The IP is rate-limited or flagged.** Datacenter and VPN ranges get

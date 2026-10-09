@@ -91,87 +91,112 @@ def test_classify_ignores_partials_left_by_a_failed_attempt(tmp_path):
     video, _ = acquire._classify_downloads(tmp_path)
     assert video.name == "source_video.webm"
 
-def test_ydl_opts_default_client_adds_no_player_client(tmp_path):
+def test_ydl_args_default_client_adds_no_player_client(tmp_path):
     cfg = Config(whisper_url="http://x/v1")
-    opts = acquire._ydl_opts(cfg, tmp_path, "default", print)
-    assert "youtube" not in opts["extractor_args"]
-    assert opts["retries"] and opts["fragment_retries"] and opts["extractor_retries"]
+    args = acquire._ydl_args(cfg, tmp_path, "default", "https://yt/x")
+    assert "--extractor-args" not in args
+    assert "--retries" in args and "--fragment-retries" in args
+    assert args[-2:] == ["--", "https://yt/x"]
 
-def test_ydl_opts_named_client_and_pot_provider(tmp_path):
+def test_ydl_args_named_client_pot_provider_and_cookies(tmp_path):
     cfg = Config(whisper_url="http://x/v1",
                  ytdlp_pot_provider_url="http://pot:4416",
-                 ytdlp_cookies=tmp_path / "cookies.txt")
-    opts = acquire._ydl_opts(cfg, tmp_path, "tv", print)
-    assert opts["extractor_args"]["youtube"] == {"player_client": ["tv"]}
-    assert opts["extractor_args"]["youtubepot-bgutilhttp"] == {
-        "base_url": ["http://pot:4416"]}
-    assert opts["cookiefile"] == str(tmp_path / "cookies.txt")
+                 ytdlp_cookies=tmp_path / "cookies.txt",
+                 ytdlp_impersonate="chrome")
+    args = acquire._ydl_args(cfg, tmp_path, "tv", "https://yt/x")
+    joined = " ".join(args)
+    assert "--extractor-args youtube:player_client=tv" in joined
+    assert ("--extractor-args youtubepot-bgutilhttp:base_url=http://pot:4416"
+            in joined)
+    assert f"--cookies {tmp_path / 'cookies.txt'}" in joined
+    assert "--impersonate chrome" in joined
 
-def _fake_yt_dlp(monkeypatch, behaviour):
-    """Install a stub yt_dlp whose download calls `behaviour(opts)`."""
-    import sys
-    import types
+def test_ydl_args_parse_with_real_yt_dlp(tmp_path):
+    """Every option songtrace passes must exist in the bundled yt-dlp."""
+    import pytest
+    pytest.importorskip("yt_dlp")
+    from yt_dlp import parse_options
+    cfg = Config(whisper_url="http://x/v1", ytdlp_pot_provider_url="http://p:1",
+                 ytdlp_cookies=tmp_path / "c.txt")
+    parse_options(acquire._ydl_args(cfg, tmp_path, "tv", "https://yt/x"))
+
+class FakeYtDlp:
+    def __init__(self, version, behaviour, seen):
+        self.version, self._behaviour, self._seen = version, behaviour, seen
+    def run(self, args, log):
+        client = next((a for a in args if a.startswith("youtube:")), None)
+        self._seen.append((self.version, client))
+        self._behaviour(self.version, client)
+
+def _fake_candidates(monkeypatch, behaviour, versions=("2026.09.01", "2026.08.19"),
+                     refreshed=None):
+    """Stub ytdlp.candidates; `refreshed` is what a refresh turns up."""
     seen = []
-
-    class FakeYoutubeDL:
-        def __init__(self, opts):
-            self.opts = opts
-        def __enter__(self):
-            return self
-        def __exit__(self, *exc):
-            return False
-        def extract_info(self, url, download):
-            seen.append(self.opts["extractor_args"].get("youtube"))
-            behaviour(self.opts)
-
-    mod = types.ModuleType("yt_dlp")
-    mod.YoutubeDL = FakeYoutubeDL
-    mod.version = types.SimpleNamespace(__version__="2026.08.19")
-    monkeypatch.setitem(sys.modules, "yt_dlp", mod)
+    def candidates(cfg, log, refresh=False):
+        vs = refreshed if refresh and refreshed else versions
+        return [FakeYtDlp(v, behaviour, seen) for v in vs]
+    monkeypatch.setattr(acquire.ytdlp, "candidates", candidates)
     return seen
 
 def test_download_falls_through_to_the_next_client(tmp_path, monkeypatch):
-    def behaviour(opts):
-        client = opts["extractor_args"].get("youtube")
+    from songtrace.ytdlp import YtDlpError
+    def behaviour(version, client):
         if client is None:
-            raise RuntimeError("HTTP Error 403: Forbidden")
+            raise YtDlpError("ERROR: HTTP Error 403: Forbidden")
         (tmp_path / "source_video.webm").write_bytes(b"v")
-    seen = _fake_yt_dlp(monkeypatch, behaviour)
+    seen = _fake_candidates(monkeypatch, behaviour)
     cfg = Config(whisper_url="http://x/v1", ytdlp_clients=["default", "tv"])
     logged = []
     video, thumb = acquire.download_youtube("https://yt/x", tmp_path, cfg,
                                             logged.append)
     assert video.name == "source_video.webm"
     assert thumb is None
-    assert seen == [None, {"player_client": ["tv"]}]
+    assert seen == [("2026.09.01", None),
+                    ("2026.09.01", "youtube:player_client=tv")]
     assert any("403" in m for m in logged)
 
-def test_download_reports_version_and_clients_when_all_fail(tmp_path, monkeypatch):
+def test_download_falls_back_to_the_bundled_copy(tmp_path, monkeypatch):
+    from songtrace.ytdlp import YtDlpError
+    def behaviour(version, client):
+        if version == "2026.09.01":
+            raise YtDlpError("rejected songtrace's options")
+        (tmp_path / "source_video.webm").write_bytes(b"v")
+    seen = _fake_candidates(monkeypatch, behaviour)
+    cfg = Config(whisper_url="http://x/v1", ytdlp_clients=["default"])
+    acquire.download_youtube("https://yt/x", tmp_path, cfg, lambda m: None)
+    assert [v for v, _ in seen] == ["2026.09.01", "2026.08.19"]
+
+def test_download_retries_with_a_release_found_after_failing(tmp_path, monkeypatch):
+    from songtrace.ytdlp import YtDlpError
+    def behaviour(version, client):
+        if version != "2026.10.01":
+            raise YtDlpError("ERROR: HTTP Error 403: Forbidden")
+        (tmp_path / "source_video.webm").write_bytes(b"v")
+    seen = _fake_candidates(monkeypatch, behaviour,
+                            refreshed=("2026.10.01", "2026.08.19"))
+    cfg = Config(whisper_url="http://x/v1", ytdlp_clients=["default"])
+    acquire.download_youtube("https://yt/x", tmp_path, cfg, lambda m: None)
+    assert [v for v, _ in seen] == ["2026.09.01", "2026.08.19", "2026.10.01"]
+
+def test_download_reports_versions_and_clients_when_all_fail(tmp_path, monkeypatch):
     import pytest
     from songtrace.pipeline import PipelineError
-    def behaviour(opts):
-        raise RuntimeError("HTTP Error 403: Forbidden")
-    _fake_yt_dlp(monkeypatch, behaviour)
+    from songtrace.ytdlp import YtDlpError
+    def behaviour(version, client):
+        raise YtDlpError("ERROR: HTTP Error 403: Forbidden")
+    seen = _fake_candidates(monkeypatch, behaviour)
     cfg = Config(whisper_url="http://x/v1", ytdlp_clients=["default", "tv"])
     with pytest.raises(PipelineError) as e:
         acquire.download_youtube("https://yt/x", tmp_path, cfg, lambda m: None)
-    assert "2026.08.19" in str(e.value)
+    assert "2026.09.01, 2026.08.19" in str(e.value)
     assert "default, tv" in str(e.value)
     assert "403" in str(e.value)
+    assert len(seen) == 4
 
 def test_download_with_no_configured_clients_still_tries_default(tmp_path, monkeypatch):
-    seen = _fake_yt_dlp(
-        monkeypatch, lambda opts: (tmp_path / "source_video.mp4").write_bytes(b"v"))
+    seen = _fake_candidates(
+        monkeypatch,
+        lambda v, c: (tmp_path / "source_video.mp4").write_bytes(b"v"))
     cfg = Config(whisper_url="http://x/v1", ytdlp_clients=[])
     acquire.download_youtube("https://yt/x", tmp_path, cfg, lambda m: None)
-    assert seen == [None]
-
-def test_ydl_log_drops_debug_lines():
-    logged = []
-    log = acquire._YdlLog(logged.append)
-    log.debug("[debug] internal detail")
-    log.debug("[youtube] Extracting URL")
-    log.warning("nsig extraction failed")
-    log.error("HTTP Error 403: Forbidden")
-    assert logged == ["[youtube] Extracting URL", "nsig extraction failed",
-                      "HTTP Error 403: Forbidden"]
+    assert seen == [("2026.09.01", None)]

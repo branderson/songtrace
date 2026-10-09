@@ -24,6 +24,9 @@ class Config:
     ytdlp_cookies: Path | None = None
     ytdlp_impersonate: str | None = None
     ytdlp_pot_provider_url: str | None = None
+    # "auto" keeps yt-dlp current from PyPI, "bundled" uses only the copy
+    # installed with songtrace, and a release such as "2026.08.19" pins that.
+    ytdlp_version: str = "auto"
 
 
 _PATH_FIELDS = {"output_dir", "work_dir", "ytdlp_cookies"}

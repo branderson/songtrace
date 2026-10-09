@@ -2,6 +2,7 @@ import json
 import shutil
 from pathlib import Path
 
+from .. import ytdlp
 from ..config import Config
 from ..media import ffmpeg
 from ..pipeline import Ctx, PipelineError, Stage
@@ -22,67 +23,50 @@ def _classify_downloads(dest: Path) -> tuple[Path, Path | None]:
     return video, thumbs[0] if thumbs else None
 
 
-class _YdlLog:
-    """Routes yt-dlp's own messages into the job log, minus progress noise."""
-
-    def __init__(self, log):
-        self._log = log
-
-    def debug(self, msg: str) -> None:
-        if not msg.startswith("[debug] "):
-            self._log(msg)
-
-    def warning(self, msg: str) -> None:
-        self._log(msg)
-
-    error = warning
-
-
-def _ydl_opts(cfg: Config, dest: Path, client: str, log) -> dict:
-    extractor_args: dict[str, dict[str, list[str]]] = {}
+def _ydl_args(cfg: Config, dest: Path, client: str, url: str) -> list[str]:
+    args = [
+        "--output", str(dest / "source_video.%(ext)s"),
+        "--format", "bestvideo*+bestaudio/best",
+        "--write-thumbnail", "--no-playlist", "--no-progress",
+        "--retries", "10", "--fragment-retries", "10",
+        "--extractor-retries", "5",
+    ]
     if client != "default":
-        extractor_args["youtube"] = {"player_client": [client]}
+        args += ["--extractor-args", f"youtube:player_client={client}"]
     if cfg.ytdlp_pot_provider_url:
-        extractor_args["youtubepot-bgutilhttp"] = {
-            "base_url": [cfg.ytdlp_pot_provider_url]}
-    opts = {
-        "outtmpl": str(dest / "source_video.%(ext)s"),
-        "format": "bestvideo*+bestaudio/best",
-        "writethumbnail": True,
-        "noplaylist": True,
-        "noprogress": True,
-        "logger": _YdlLog(log),
-        "retries": 10,
-        "fragment_retries": 10,
-        "extractor_retries": 5,
-        "extractor_args": extractor_args,
-    }
+        args += ["--extractor-args",
+                 f"youtubepot-bgutilhttp:base_url={cfg.ytdlp_pot_provider_url}"]
     if cfg.ytdlp_cookies:
-        opts["cookiefile"] = str(cfg.ytdlp_cookies)
+        args += ["--cookies", str(cfg.ytdlp_cookies)]
     if cfg.ytdlp_impersonate:
-        from yt_dlp.networking.impersonate import ImpersonateTarget
-        opts["impersonate"] = ImpersonateTarget.from_str(cfg.ytdlp_impersonate)
-    return opts
+        args += ["--impersonate", cfg.ytdlp_impersonate]
+    return [*args, "--", url]
 
 
 def download_youtube(url: str, dest: Path, cfg: Config,
                      log=print) -> tuple[Path, Path | None]:
-    import yt_dlp
     clients = list(cfg.ytdlp_clients) or ["default"]
+    tried: list[str] = []
     last: Exception | None = None
-    for client in clients:
-        try:
-            with yt_dlp.YoutubeDL(_ydl_opts(cfg, dest, client, log)) as ydl:
-                ydl.extract_info(url, download=True)
-            return _classify_downloads(dest)
-        except Exception as e:
-            last = e
-            log(f"yt-dlp player_client={client} failed: {e}")
+    # If every copy fails, look for a release newer than the daily check found.
+    for refresh in (False, True):
+        for ydl in ytdlp.candidates(cfg, log, refresh):
+            if ydl.version in tried:
+                continue
+            tried.append(ydl.version)
+            for client in clients:
+                try:
+                    ydl.run(_ydl_args(cfg, dest, client, url), log)
+                    return _classify_downloads(dest)
+                except PipelineError as e:
+                    last = e
+                    log(f"yt-dlp {ydl.version} player_client={client} "
+                        f"failed: {e}")
     raise PipelineError(
-        f"yt-dlp {yt_dlp.version.__version__} could not download {url} after "
-        f"trying player_client={', '.join(clients)}. Last error: {last}. "
-        "YouTube blocks change often: upgrade yt-dlp, then see the yt-dlp "
-        "options in config.toml (cookies, impersonation, PO token provider).")
+        f"yt-dlp {', '.join(tried)} could not download {url} after trying "
+        f"player_client={', '.join(clients)}. Last error: {last}. "
+        "See the yt-dlp options in config.toml (cookies, impersonation, "
+        "PO token provider).")
 
 
 def _run(ctx: Ctx) -> None:
