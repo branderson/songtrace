@@ -47,9 +47,8 @@ def classify_lyrics_match(segments, ref: RefLyrics, pad: float = 1.0
     dropped_lines: reference line indices covered only by 'insert' opcodes
     (present in the lyrics, never heard). missing_spans: the padded, merged
     bounds of the heard segments behind 'delete' opcodes (heard, but matching
-    no reference word) — scoped tightly to the unmatched audio itself, not
-    the whole vocal section it falls in, so matched lines sharing a section
-    with an ad-lib keep their notes.
+    no reference word). A segment can also hold matched lines, so a span
+    marks where to look, not words to discard.
     """
     matcher, seg_of, line_of = match_lyrics(segments, ref)
     covered = [False] * len(line_of)
