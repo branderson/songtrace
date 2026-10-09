@@ -53,7 +53,7 @@ def test_classify_lyrics_match_keeps_partially_matched_lines():
 def test_classify_lyrics_match_scopes_missing_span_to_adlib_not_whole_section():
     # matched line and an unmatched ad-lib close enough together that
     # vocal_sections would merge them into one section; missing_spans must
-    # stay tight around the ad-lib so the matched line keeps its notes.
+    # stay tight around the ad-lib so the review marks the right place.
     ref = normalize_lyrics("it's one two three\nfour five six seven eight")
     segs = [seg(1, 4, "it's one two three four five six seven eight"),
             seg(6, 8, "completely unrelated ad lib")]
