@@ -18,3 +18,6 @@ bind_host = "0.0.0.0"
 # ytdlp_cookies = "/config/youtube-cookies.txt"  # Netscape cookie jar
 # ytdlp_impersonate = "chrome"                   # TLS fingerprint to present
 # ytdlp_pot_provider_url = "http://bgutil-provider:4416"
+# Newer yt-dlp releases are fetched from PyPI at runtime and tried before the
+# bundled one; "bundled" turns that off, a release number pins one.
+# ytdlp_version = "auto"
