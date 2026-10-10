@@ -6,6 +6,11 @@ import numpy as np
 from ..models import on_release
 from ..pipeline import Ctx, Stage
 
+# Separated vocal stems keep faint bleed that crepe still finds a pitch in, so
+# frames this far below the song's loud vocal level count as silence. Relative
+# rather than absolute, so it holds however loud the song was mastered.
+SILENCE_BELOW_LOUD_DB = 25.0
+
 
 @on_release
 def unload_model() -> None:
@@ -16,6 +21,11 @@ def unload_model() -> None:
     for attr in ("model", "capacity"):
         if hasattr(torchcrepe.infer, attr):
             delattr(torchcrepe.infer, attr)
+
+
+def mute_silence(conf: np.ndarray, loudness: np.ndarray) -> None:
+    """Zero the confidence of frames quiet enough to be bleed, in place."""
+    conf[loudness < np.quantile(loudness, 0.9) - SILENCE_BELOW_LOUD_DB] = 0.0
 
 
 def track_pitch(vocals_path: Path, model: str, device: str):
@@ -33,6 +43,7 @@ def track_pitch(vocals_path: Path, model: str, device: str):
         return_periodicity=True, batch_size=512)
     f0 = f0[0].cpu().numpy()
     conf = periodicity[0].cpu().numpy()
+    mute_silence(conf, torchcrepe.loudness.a_weighted(waveform, 16000, 160)[0].cpu().numpy())
     times = np.arange(len(f0)) * 0.01
     return times, f0, conf
 
