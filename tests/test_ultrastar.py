@@ -10,8 +10,8 @@ def load(name):
     return (FIXTURES / name).read_text(encoding="utf-8", errors="replace")
 
 def test_parse_headers_and_notes():
-    song = parse_ultrastar(load("sanctuary.txt"))
-    assert get_header(song, "artist") == "Utada Hikaru"
+    song = parse_ultrastar(load("chart_crlf.txt"))
+    assert get_header(song, "artist") == "Test Artist"
     assert parse_bpm(get_header(song, "BPM")) == 217.98
     first = song.body[0]
     assert first == Note(kind=":", beat=0, length=3, pitch=16, text="ah")
@@ -19,16 +19,16 @@ def test_parse_headers_and_notes():
     assert any(n.kind == "F" for n in song.body if isinstance(n, Note))
 
 def test_note_text_keeps_leading_space():
-    song = parse_ultrastar(load("sanctuary.txt"))
+    song = parse_ultrastar(load("chart_crlf.txt"))
     notes = [n for n in song.body if isinstance(n, Note)]
     assert notes[1].text == " ah"
 
 def test_negative_pitch():
-    song = parse_ultrastar(load("sweet_child.txt"))
+    song = parse_ultrastar(load("chart_latin1.txt"))
     assert any(n.pitch == -9 for n in song.body if isinstance(n, Note))
 
 def test_round_trip():
-    for name in ("sweet_child.txt", "sanctuary.txt"):
+    for name in ("chart_latin1.txt", "chart_crlf.txt"):
         song = parse_ultrastar(load(name))
         again = parse_ultrastar(serialize_ultrastar(song))
         assert again == song

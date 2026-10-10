@@ -1,0 +1,36 @@
+#TITLE:Placeholder Chart
+#ARTIST:Test Artist
+#LANGUAGE:English
+#YEAR:2000
+#CREATOR:songtrace tests
+#GENRE:Test
+#COVER:Test Artist - Placeholder Chart [CO].jpg
+#MP3:Test Artist - Placeholder Chart.mp3
+#VIDEO:Test Artist - Placeholder Chart.mp4
+#BPM:217,98
+#GAP:4880
+#MEDLEYSTARTBEAT:113
+#MEDLEYENDBEAT:240
+: 0 3 16 ah
+: 5 3 20  ah
+: 11 3 23  la
+: 17 3 16  la
+: 22 28 15  ah
+: 51 2 16  doo
+: 54 31 16 ~
+- 95  
+F 113 3 18 la
+F 117 3 21  la
+F 121 3 21  la
+* 125 3 21  doo
+* 129 12 19 ~
+- 150
+: 155 4 12 Na
+R 160 4 0  na
+G 165 4 0  na
+: 170 6 14  la
+- 190
+: 194 3 16 La
+: 198 3 18  la
+* 202 10 20  ah
+E
