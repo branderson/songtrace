@@ -78,7 +78,7 @@ def test_syllabify():
     assert syllabify("reminds", "English") == ["re", "minds"]
     assert syllabify("a", "English") == ["a"]
     assert syllabify("xyzzy", None) == ["xyzzy"]
-    assert syllabify("She's", "English") == ["She's"]
+    assert syllabify("It's", "English") == ["It's"]
 
 
 def test_syllabify_preserves_word_characters():
@@ -96,12 +96,12 @@ def test_syllabify_language_without_pyphen_dict_is_not_mishandled_as_english():
 def test_build_notes_basic_line():
     times, f0, conf = flat_pitch()
     rows = [
-        {"word": "She's", "start": 1.0, "end": 1.5, "score": 0.9, "line_index": 0},
+        {"word": "It's", "start": 1.0, "end": 1.5, "score": 0.9, "line_index": 0},
         {"word": "got", "start": 1.6, "end": 2.0, "score": 0.9, "line_index": 0},
         {"word": "Now", "start": 5.0, "end": 5.5, "score": 0.9, "line_index": 1},
     ]
     notes, breaks, warnings = build_notes(rows, times, f0, conf, "English")
-    assert notes[0].text == "She's"          # line-initial: no leading space
+    assert notes[0].text == "It's"          # line-initial: no leading space
     assert notes[1].text == " got"           # mid-line: leading space
     assert notes[2].text == "Now"            # new line: no leading space
     assert len(breaks) == 1 and 2.0 <= breaks[0] <= 5.0
@@ -278,7 +278,7 @@ def test_notes_stage_writes_json(tmp_path):
     times, f0, conf = flat_pitch()
     np.savez(work / "pitch.npz", times=times, f0=f0, conf=conf)
     (work / "alignment.json").write_text(json.dumps([
-        {"word": "She's", "start": 1.0, "end": 1.5, "score": 0.9, "line_index": 0},
+        {"word": "It's", "start": 1.0, "end": 1.5, "score": 0.9, "line_index": 0},
         {"word": "gone", "start": 3.0, "end": 3.5, "score": 0.9, "line_index": 1},
     ]))
     ctx = Ctx(inp=SongInput(title="T", artist="A", lyrics_text="x", language="English"),
@@ -287,7 +287,7 @@ def test_notes_stage_writes_json(tmp_path):
     assert stage.outputs(ctx) == [work / "notes_sec.json"]
     stage.run(ctx)
     data = json.loads((work / "notes_sec.json").read_text())
-    assert [n["text"] for n in data["notes"]] == ["She's", "gone"]
+    assert [n["text"] for n in data["notes"]] == ["It's", "gone"]
     assert data["breaks"] == [2.25]
     assert data["warnings"] == []
     assert TimedNote(**data["notes"][0]).pitch == 0

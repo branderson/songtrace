@@ -1,0 +1,21 @@
+#TITLE:Café Placeholder
+#ARTIST:Tést Artist
+#LANGUAGE:English
+#GENRE:Test
+#YEAR:2000
+#MP3:Tést Artist - Café Placeholder.mp3
+#CREATOR:songtrace tests
+#BPM:256
+#GAP:49673
+: 0 4 2 Doo
+: 6 4 4  doo
+: 12 8 5  laé
+- 28 30
+: 32 4 0 Na
+: 38 4 -2  na
+* 44 12 -9  ah
+- 64
+F 70 4 3 La
+: 76 6 -5  la
+: 84 10 -9 ~
+E
