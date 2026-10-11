@@ -179,8 +179,9 @@ still wins.
 
 **REBUILD ALL FROM…**, under CREATE SONG, does the same for every song at once:
 pick the stage an update improved and each song is rebuilt from there with the
-inputs it has now. Songs still in progress are skipped, as are songs whose
-uploaded video is gone when the stage is `acquire`.
+inputs it has now. Every song starts ticked; untick any already rebuilt by hand
+(each shows when it was last built). Songs still in progress are skipped, as
+are songs whose uploaded video is gone when the stage is `acquire`.
 
 ## YouTube download failures
 

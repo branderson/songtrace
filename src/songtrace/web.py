@@ -329,20 +329,39 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             rebuild_policy.plan(parent.inp, inp), force_from))
         return _enqueue(new_id, inp, rebuilt_from=job_id, force_stage=force_from)
 
-    @app.post("/api/rebuild-all", status_code=201)
-    def rebuild_all(force_from: str = Form(...)):
-        """Rebuild every song from `force_from` on, for when songtrace itself
-        improved that stage. Each is an ordinary rebuild with unchanged inputs."""
-        if force_from not in STAGE_ORDER:
-            raise HTTPException(400, f"unknown stage {force_from!r}")
+    def _current_songs() -> list[Job]:
+        """The job that stands for each song now, newest first."""
         with lock:
             # a job that was rebuilt is history: its rebuild is the song now,
             # possibly under another slug
             rebuilt = {j.rebuilt_from for j in jobs.values()}
             latest = {song_slug(j.inp): j for j in (jobs[i] for i in order)
                       if j.id not in rebuilt}
-        ids, skipped = [], []
-        for job in latest.values():
+            position = {job_id: n for n, job_id in enumerate(order)}
+            return sorted(latest.values(), key=lambda j: position[j.id], reverse=True)
+
+    @app.get("/api/rebuild-all")
+    def rebuild_all_candidates():
+        return [{"id": j.id, "title": j.title, "artist": j.artist,
+                 "status": j.status, "rebuilt_from": j.rebuilt_from,
+                 "finished_at": j.finished_at}
+                for j in _current_songs()]
+
+    @app.post("/api/rebuild-all", status_code=201)
+    def rebuild_all(force_from: str = Form(...), ids: list[str] | None = Form(None)):
+        """Rebuild every song, or the ones in `ids`, from `force_from` on, for
+        when songtrace itself improved that stage. Each is an ordinary rebuild
+        with unchanged inputs."""
+        if force_from not in STAGE_ORDER:
+            raise HTTPException(400, f"unknown stage {force_from!r}")
+        songs = _current_songs()
+        queued, skipped = [], []
+        if ids is not None:
+            current = {j.id for j in songs}
+            skipped = [{"id": i, "reason": "no longer the current job for its song"}
+                       for i in ids if i not in current]
+            songs = [j for j in songs if j.id in set(ids)]
+        for job in songs:
             if job.status in ("queued", "running"):
                 skipped.append({"id": job.id, "reason": "still in progress"})
                 continue
@@ -351,9 +370,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             except HTTPException as e:
                 skipped.append({"id": job.id, "reason": e.detail})
                 continue
-            ids.append(_enqueue(uuid.uuid4().hex, job.inp, rebuilt_from=job.id,
-                                force_stage=force_from)["id"])
-        return {"ids": ids, "skipped": skipped}
+            queued.append(_enqueue(uuid.uuid4().hex, job.inp, rebuilt_from=job.id,
+                                   force_stage=force_from)["id"])
+        return {"ids": queued, "skipped": skipped}
 
     @app.get("/api/stages")
     def list_stages():

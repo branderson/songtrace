@@ -117,7 +117,7 @@ body {
 #rebuild-all-note { margin: -12px 18px 20px; }
 
 #rebuild-all-dialog {
-  max-width: 420px;
+  width: min(480px, calc(100vw - 32px));
   padding: 26px 28px;
   color: var(--text);
   background: var(--panel);
@@ -135,6 +135,36 @@ body {
 #rebuild-all-form { display: grid; gap: 16px; }
 #rebuild-all-form p { margin: 0; font-size: 0.88rem; line-height: 1.5; }
 #rebuild-all-count { color: var(--warn); }
+#rebuild-all-songs { margin: 0; padding: 0; border: 0; min-width: 0; }
+#rebuild-all-songs legend {
+  margin-bottom: 6px;
+  padding: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+#rebuild-all-list {
+  max-height: 40vh;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.rebuild-all-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 10px;
+  align-items: baseline;
+  padding: 7px 4px;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+.rebuild-all-row input { accent-color: var(--purple); }
+.rebuild-all-row:has(input:disabled) { cursor: default; color: var(--text-muted); }
+.rebuild-all-row .meta { grid-column: 2; font-size: 0.76rem; color: var(--text-muted); }
+.rebuild-all-every { padding-top: 0; color: var(--text-muted); }
 #rebuild-all-error { min-height: 1.2em; color: var(--fail); }
 #rebuild-all-error:empty { display: none; }
 
@@ -553,16 +583,24 @@ button { cursor: pointer; }
 <dialog id="rebuild-all-dialog" aria-labelledby="rebuild-all-heading">
   <form id="rebuild-all-form" method="dialog">
     <h2 id="rebuild-all-heading">REBUILD ALL SONGS</h2>
-    <p>Reruns every song from the chosen stage onwards with the inputs it has
-      now, for when a songtrace update improves that stage.</p>
+    <p>Reruns the songs ticked below from the chosen stage onwards with the
+      inputs they have now, for when a songtrace update improves that stage.</p>
     <label class="field">
       <span>Restart from</span>
       <select name="force_from" required></select>
     </label>
+    <fieldset id="rebuild-all-songs">
+      <legend>Songs</legend>
+      <label class="rebuild-all-row rebuild-all-every">
+        <input type="checkbox" id="rebuild-all-toggle" checked>
+        <span>All songs</span>
+      </label>
+      <div id="rebuild-all-list"></div>
+    </fieldset>
     <p id="rebuild-all-count"></p>
     <p id="rebuild-all-error" role="alert"></p>
     <div class="form-actions">
-      <button type="submit" class="primary">REBUILD ALL</button>
+      <button type="submit" class="primary">REBUILD SELECTED</button>
       <button type="button" class="action" id="rebuild-all-cancel">CANCEL</button>
     </div>
   </form>
@@ -754,28 +792,61 @@ const rebuildAllForm = document.getElementById("rebuild-all-form");
 const rebuildAllCount = document.getElementById("rebuild-all-count");
 const rebuildAllError = document.getElementById("rebuild-all-error");
 
-// The server's rule, for the count only: a rebuilt job's rebuild is the song
-// now, and two submissions of one song share it.
-function currentSongs() {
-  const rebuilt = new Set(JOBS.map(j => j.rebuilt_from));
-  const songs = new Map();
-  for (const job of [...JOBS].reverse()) {
-    if (!rebuilt.has(job.id)) songs.set(`${job.artist} - ${job.title}`, job);
-  }
-  return [...songs.values()];
+const rebuildAllList = document.getElementById("rebuild-all-list");
+const rebuildAllToggle = document.getElementById("rebuild-all-toggle");
+const rebuildAllSubmit = rebuildAllForm.querySelector("button[type=submit]");
+
+function rebuildAllBoxes() {
+  return [...rebuildAllList.querySelectorAll("input:not(:disabled)")];
 }
 
-rebuildAllButton.addEventListener("click", () => {
-  const songs = currentSongs();
-  const idle = songs.filter(j => j.status === "done" || j.status === "failed").length;
-  rebuildAllCount.textContent = idle === 1 ? "1 song will be rebuilt."
-                                           : `${idle} songs will be rebuilt.`;
-  if (idle < songs.length) {
-    rebuildAllCount.textContent += ` ${songs.length - idle} still in progress will be skipped.`;
-  }
+function updateRebuildAllCount() {
+  const boxes = rebuildAllBoxes();
+  const chosen = boxes.filter(b => b.checked).length;
+  rebuildAllToggle.checked = chosen === boxes.length && chosen > 0;
+  rebuildAllToggle.indeterminate = chosen > 0 && chosen < boxes.length;
+  rebuildAllCount.textContent = chosen === 1 ? "1 song will be rebuilt."
+                                             : `${chosen} songs will be rebuilt.`;
+  // with nothing ticked no ids are sent, which the API reads as every song
+  rebuildAllSubmit.disabled = chosen === 0;
+}
+
+function rebuildAllRow(song) {
+  const busy = song.status === "queued" || song.status === "running";
+  const row = document.createElement("label");
+  row.className = "rebuild-all-row";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.name = "ids";
+  box.value = song.id;
+  box.checked = !busy;
+  box.disabled = busy;
+  const name = document.createElement("span");
+  name.textContent = `${song.title} · ${song.artist}`;
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  const when = song.finished_at && new Date(song.finished_at * 1000).toLocaleString(
+    undefined, { dateStyle: "medium", timeStyle: "short" });
+  meta.textContent = busy ? "in progress, skipped"
+    : `${song.status === "failed" ? "failed" : song.rebuilt_from ? "rebuilt" : "built"} ${when || ""}`.trim();
+  row.append(box, name, meta);
+  return row;
+}
+
+rebuildAllButton.addEventListener("click", async () => {
   rebuildAllError.textContent = "";
   rebuildAllForm.reset();
+  const resp = await fetch("/api/rebuild-all");
+  const songs = resp.ok ? await resp.json() : [];
+  rebuildAllList.replaceChildren(...songs.map(rebuildAllRow));
+  updateRebuildAllCount();
   rebuildAllDialog.showModal();
+});
+
+rebuildAllList.addEventListener("change", updateRebuildAllCount);
+rebuildAllToggle.addEventListener("change", () => {
+  for (const box of rebuildAllBoxes()) box.checked = rebuildAllToggle.checked;
+  updateRebuildAllCount();
 });
 
 document.getElementById("rebuild-all-cancel").addEventListener(

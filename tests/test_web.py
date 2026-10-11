@@ -1760,7 +1760,8 @@ def test_rebuild_all_rebuilds_every_song_from_the_stage(tmp_path):
     jobs = [wait_status(client, i, "done") for i in body["ids"]]
     assert {j["rebuilt_from"] for j in jobs} == {first, second}
     assert [s["force_from"] for s in seen[2:]] == ["pitch", "pitch"]
-    assert [s["inp"] for s in seen[2:]] == [s["inp"] for s in seen[:2]]
+    by_title = lambda runs: sorted((r["inp"] for r in runs), key=lambda i: i.title)
+    assert by_title(seen[2:]) == by_title(seen[:2])
 
 
 def test_rebuild_all_skips_jobs_that_were_already_rebuilt(tmp_path):
@@ -1819,3 +1820,35 @@ def test_rebuild_all_rejects_an_unknown_stage(tmp_path):
     make_done_job(client)
     assert client.post("/api/rebuild-all", data={"force_from": "nope"}).status_code == 400
     assert client.post("/api/rebuild-all", data={}).status_code == 422
+
+
+def test_rebuild_all_lists_the_current_job_of_each_song(tmp_path):
+    client, _ = make_client(tmp_path, capture_runner_factory([]))
+    one = make_done_job(client, title="One")
+    two = make_done_job(client, title="Two")
+    rerun = client.post(f"/api/jobs/{one}/rerun").json()["id"]
+    wait_status(client, rerun, "done")
+    songs = client.get("/api/rebuild-all").json()
+    assert [(s["id"], s["title"], s["rebuilt_from"]) for s in songs] == [
+        (rerun, "One", one), (two, "Two", None)]
+    assert all(s["status"] == "done" and s["finished_at"] for s in songs)
+
+
+def test_rebuild_all_rebuilds_only_the_songs_selected(tmp_path):
+    client, _ = make_client(tmp_path, capture_runner_factory([]))
+    make_done_job(client, title="One")
+    two = make_done_job(client, title="Two")
+    resp = client.post("/api/rebuild-all", data={"force_from": "pitch", "ids": [two]})
+    body = resp.json()
+    assert len(body["ids"]) == 1 and body["skipped"] == []
+    assert wait_status(client, body["ids"][0], "done")["rebuilt_from"] == two
+
+
+def test_rebuild_all_reports_a_selected_job_that_was_since_rebuilt(tmp_path):
+    client, _ = make_client(tmp_path, capture_runner_factory([]))
+    old = make_done_job(client)
+    rerun = client.post(f"/api/jobs/{old}/rerun").json()["id"]
+    wait_status(client, rerun, "done")
+    body = client.post("/api/rebuild-all", data={"force_from": "pitch", "ids": [old]}).json()
+    assert body == {"ids": [], "skipped": [
+        {"id": old, "reason": "no longer the current job for its song"}]}
