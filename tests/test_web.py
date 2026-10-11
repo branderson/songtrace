@@ -1852,3 +1852,23 @@ def test_rebuild_all_reports_a_selected_job_that_was_since_rebuilt(tmp_path):
     body = client.post("/api/rebuild-all", data={"force_from": "pitch", "ids": [old]}).json()
     assert body == {"ids": [], "skipped": [
         {"id": old, "reason": "no longer the current job for its song"}]}
+
+
+def test_a_job_is_only_reported_finished_once_it_has_finished(tmp_path, monkeypatch):
+    """Done must mean done: a slow upload cleanup used to show a 'done' job
+    with its upload still there and no finished_at."""
+    from songtrace import web
+    real_cleanup = web._cleanup_uploads
+
+    def slow_cleanup(*args):
+        time.sleep(0.3)
+        real_cleanup(*args)
+
+    monkeypatch.setattr(web, "_cleanup_uploads", slow_cleanup)
+    client, cfg = make_client(tmp_path, ok_runner)
+    job_id = client.post("/api/jobs", data={"title": "T", "artist": "A", "lyrics": "x"},
+                         files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4")}
+                         ).json()["id"]
+    job = wait_status(client, job_id, "done")
+    assert job["finished_at"] is not None
+    assert not (cfg.work_dir / "uploads" / job_id / "v.mp4").exists()
