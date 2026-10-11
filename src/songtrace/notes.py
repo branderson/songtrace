@@ -34,6 +34,7 @@ class TimedNote:
     text: str             # display text incl. leading space / "~"
     low_confidence: bool
     line_index: int
+    kind: str = ":"       # UltraStar note type; generated notes are all normal
 
 
 def hz_to_midi_float(hz: float) -> float:
@@ -170,8 +171,7 @@ def _fmt(t: float) -> str:
     return f"{int(t // 60)}:{int(t % 60):02d}"
 
 
-def _warnings(notes: list[TimedNote], dropped_lines=(), missing_spans=(),
-             ref_lines=()) -> list[str]:
+def low_confidence_warnings(notes: list[TimedNote]) -> list[str]:
     runs: list[list[TimedNote]] = []
     for n in notes:
         if not n.low_confidence:
@@ -181,10 +181,15 @@ def _warnings(notes: list[TimedNote], dropped_lines=(), missing_spans=(),
             runs[-1].append(n)
         else:
             runs.append([n])
-    warnings = [
+    return [
         f"{len(run)} low-confidence note{'' if len(run) == 1 else 's'} "
         f"near {_fmt(run[0].start)}–{_fmt(run[-1].start + run[-1].duration)}"
         for run in runs]
+
+
+def _warnings(notes: list[TimedNote], dropped_lines=(), missing_spans=(),
+             ref_lines=()) -> list[str]:
+    warnings = low_confidence_warnings(notes)
     for group in _consecutive_runs(dropped_lines):
         n = len(group)
         text = " ".join(ref_lines[group[0]]) if group[0] < len(ref_lines) else ""

@@ -169,7 +169,7 @@ def test_grid_stage_writes_song_txt(tmp_path, monkeypatch):
     monkeypatch.setattr(grid_stage_mod.grid, "detect_bpm", lambda p: 120.0)
     ctx = make_ctx(work, language="English", genre="Pop", year=1999)
     stage = grid_stage_mod.grid_stage()
-    assert stage.outputs(ctx) == [work / "song.txt"]
+    assert stage.outputs(ctx) == [work / "song.txt", work / "notes_final.json"]
     stage.run(ctx)
     song = parse_ultrastar((work / "song.txt").read_text(encoding="utf-8"))
     assert [k for k, _ in song.headers] == [
@@ -257,3 +257,45 @@ def test_grid_stage_reports_no_notes_as_pipeline_error(tmp_path, monkeypatch):
 def test_grid_stage_registered():
     names = [s.name for s in all_stages()]
     assert names[-1] == "package" and names[-2] == "grid"
+
+
+def _regenerate(work, pitch):
+    """What a rebuild leaves: fresh notes for both lines, at `pitch`."""
+    (work / "notes_sec.json").write_text(json.dumps({
+        "notes": [{**note(1.0, 0.5, pitch, "one"), "line_index": 0},
+                  {**note(3.0, 0.5, pitch, "three"), "line_index": 1}],
+        "breaks": [2.0], "warnings": []}))
+
+
+def test_an_edited_line_survives_a_rebuild(tmp_path, monkeypatch):
+    from songtrace import edits
+    work = tmp_path / "w"
+    write_work(work)
+    monkeypatch.setattr(grid_stage_mod.grid, "detect_bpm", lambda p: 120.0)
+    ctx = make_ctx(work)
+    ctx.inp.lyrics_text = "one\nthree"
+    data = edits.load(work, [["one"], ["three"]])
+    edits.set_line(data, 1, [{"start": 3.2, "duration": 0.6, "pitch": 9,
+                              "text": "three", "kind": "*"}])
+    edits.save(work, data)
+    for regenerated_pitch in (0, 4):
+        _regenerate(work, regenerated_pitch)
+        grid_stage_mod.grid_stage().run(ctx)
+        song = parse_ultrastar((work / "song.txt").read_text(encoding="utf-8"))
+        notes = [n for n in song.body if isinstance(n, Note)]
+        assert [(n.kind, n.pitch, n.text) for n in notes] == [
+            (":", regenerated_pitch, "one"), ("*", 9, "three")]
+
+
+def test_rechart_replaces_the_notes_and_keeps_headers_and_tempo(tmp_path):
+    from songtrace.grid import rechart
+    from songtrace.ultrastar import serialize_ultrastar
+    txt = tmp_path / "song.txt"
+    txt.write_text(serialize_ultrastar(to_ultrastar(
+        [note(1.0, 0.5)], [], 300.0,
+        [("TITLE", "Song"), ("VIDEO", "Band - Song.mp4")])), encoding="utf-8")
+    rechart(txt, [{**note(2.0, 0.5, 7, "new"), "kind": "F"}], [])
+    song = parse_ultrastar(txt.read_text(encoding="utf-8"))
+    assert [k for k, _ in song.headers] == ["TITLE", "VIDEO", "BPM", "GAP"]
+    assert get_header(song, "BPM") == "300" and get_header(song, "GAP") == "2000"
+    assert [(n.kind, n.pitch, n.text) for n in song.body] == [("F", 7, "new")]

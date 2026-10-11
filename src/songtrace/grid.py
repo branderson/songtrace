@@ -3,7 +3,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .ultrastar import LineBreak, Note, UltraStarSong, format_bpm
+from .ultrastar import (LineBreak, Note, UltraStarSong, format_bpm, get_header,
+                        parse_bpm, parse_ultrastar, serialize_ultrastar)
 
 
 def detect_bpm(instrumental_path: Path) -> float:
@@ -49,10 +50,24 @@ def to_ultrastar(notes: list[dict], breaks: list[float], file_bpm: float,
         else:
             b = max(beat(t), cursor)
             length = max(1, beat(t + n["duration"]) - beat(t))
-            body.append(Note(kind=":", beat=b, length=length, pitch=n["pitch"],
-                             text=n["text"]))
+            body.append(Note(kind=n.get("kind", ":"), beat=b, length=length,
+                             pitch=n["pitch"], text=n["text"]))
             cursor = b + length
     out_headers = list(headers)
     out_headers.append(("BPM", format_bpm(file_bpm)))
     out_headers.append(("GAP", str(gap_ms)))
     return UltraStarSong(headers=out_headers, body=body)
+
+
+def rechart(txt_path: Path, notes: list[dict], breaks: list[float]) -> None:
+    """Replace a chart's notes, keeping its headers and its BPM.
+
+    For an edit saved from the editor: the tempo was settled when the song
+    was built, and the packaged chart's headers may differ from the work
+    copy's (a re-encoded #VIDEO, a dropped #COVER), so each keeps its own.
+    """
+    song = parse_ultrastar(txt_path.read_text(encoding="utf-8"))
+    bpm = parse_bpm(get_header(song, "BPM"))
+    headers = [(k, v) for k, v in song.headers if k.upper() not in ("BPM", "GAP")]
+    txt_path.write_text(serialize_ultrastar(to_ultrastar(notes, breaks, bpm, headers)),
+                        encoding="utf-8")

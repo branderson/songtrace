@@ -9,11 +9,12 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import edits, grid
 from . import rebuild as rebuild_policy
 from .config import Config
 from .lyrics import normalize_lyrics
@@ -132,6 +133,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
     jobs: dict[str, Job] = {}
     order: list[str] = []
     lock = threading.Lock()
+    edit_lock = threading.Lock()
     todo: queue.Queue[str] = queue.Queue()
 
     for job in _discover_jobs(cfg):
@@ -466,7 +468,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         if job.status != "done":
             raise HTTPException(404)
         work = cfg.work_dir / song_slug(job.inp)
-        notes_file = work / "notes_sec.json"
+        notes_file = work / edits.FINAL_FILE
+        if not notes_file.exists():
+            notes_file = work / "notes_sec.json"
         if not notes_file.exists():
             raise HTTPException(404)
         notes_data = json.loads(notes_file.read_text())
@@ -486,13 +490,96 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         for n in notes_data["notes"]:
             by_line.setdefault(n["line_index"], []).append({
                 "start": n["start"], "end": n["start"] + n["duration"],
-                "pitch": n["pitch"], "low_confidence": n["low_confidence"]})
+                "pitch": n["pitch"], "low_confidence": n["low_confidence"],
+                "text": n["text"], "kind": n.get("kind", ":")})
+        edited = set(notes_data.get("edited_lines", []))
         lines = [{"index": i, "text": " ".join(words), "dropped": i in dropped,
+                  "edited": i in edited,
                   "notes": by_line.get(i, []), "words": words_by_line.get(i, [])}
                  for i, words in enumerate(ref.lines)]
+        stale = [{"text": " ".join(e["words"]), "notes": e["notes"]}
+                 for e in notes_data.get("stale", [])]
         media = {kind: _resolve_media(job, header) is not None
                  for kind, header in MEDIA_HEADERS.items()}
-        return {"lines": lines, "missing_spans": missing_spans, "media": media}
+        return {"lines": lines, "missing_spans": missing_spans, "media": media,
+                "stale": stale, "grid": _chart_grid(work)}
+
+    def _chart_grid(work: Path) -> dict | None:
+        """The beat grid the chart was built on, for snapping edits to it."""
+        txt = work / "song.txt"
+        if not txt.exists():
+            return None
+        song = parse_ultrastar(txt.read_text(encoding="utf-8"))
+        bpm, gap = get_header(song, "BPM"), get_header(song, "GAP")
+        if bpm is None or gap is None:
+            return None
+        return {"bpm": float(bpm.replace(",", ".")), "gap_ms": float(gap.replace(",", "."))}
+
+    def _editable(job_id: str) -> Job:
+        job = _finished_job(job_id)
+        slug = song_slug(job.inp)
+        with lock:
+            # a build of this song would overwrite the chart being edited
+            if any(j.status in ("queued", "running") and song_slug(j.inp) == slug
+                   for j in jobs.values()):
+                raise HTTPException(409, "this song is being rebuilt")
+        if job.status != "done":
+            raise HTTPException(409, "only a finished song can be edited")
+        return job
+
+    def _edit(job_id: str, change) -> dict:
+        """Apply `change` to the song's edits, then rewrite its charts."""
+        job = _editable(job_id)
+        work = cfg.work_dir / song_slug(job.inp)
+        lyrics = normalize_lyrics(job.inp.lyrics_text).lines
+        with edit_lock:
+            data = edits.load(work, lyrics)
+            try:
+                change(data, lyrics)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            edits.save(work, data)
+            final = edits.finalize(work, lyrics)
+            charts = [work / "song.txt"]
+            if job.output_dir:
+                charts.append(Path(job.output_dir) / f"{song_slug(job.inp)}.txt")
+            for txt in charts:
+                if txt.exists():
+                    grid.rechart(txt, final["notes"], final["breaks"])
+        with lock:
+            job.warnings = list(final["warnings"])
+        return get_review(job_id)
+
+    def _line(lyrics, index: int) -> int:
+        if not 0 <= index < len(lyrics):
+            raise HTTPException(404, f"no line {index}")
+        return index
+
+    @app.put("/api/jobs/{job_id}/lines/{index}")
+    def save_line(job_id: str, index: int, body: dict = Body(...)):
+        """Save a line as edited: its full note list, in seconds."""
+        notes = body.get("notes")
+        if not isinstance(notes, list):
+            raise HTTPException(400, "body must be {\"notes\": [...]}")
+        return _edit(job_id, lambda data, lyrics: edits.set_line(
+            data, _line(lyrics, index), notes))
+
+    @app.delete("/api/jobs/{job_id}/lines/{index}")
+    def revert_line(job_id: str, index: int):
+        """Drop a line's edit, so it follows what the pipeline generates."""
+        def change(data, lyrics):
+            if not edits.clear_line(data, _line(lyrics, index)):
+                raise HTTPException(404, f"line {index} has no edit")
+        return _edit(job_id, change)
+
+    @app.delete("/api/jobs/{job_id}/stale/{n}")
+    def discard_stale(job_id: str, n: int):
+        """Throw away an edit whose line's lyrics have since changed."""
+        def change(data, lyrics):
+            if not 0 <= n < len(data["stale"]):
+                raise HTTPException(404, f"no stale edit {n}")
+            data["stale"].pop(n)
+        return _edit(job_id, change)
 
     return app
 
