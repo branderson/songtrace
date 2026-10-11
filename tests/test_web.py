@@ -1412,13 +1412,16 @@ def test_review_endpoint_groups_notes_by_line(tmp_path):
     wait_status(client, job_id, "done")
     body = client.get(f"/api/jobs/{job_id}/review").json()
     assert body["lines"] == [
-        {"index": 0, "text": "hi", "dropped": False,
-         "notes": [{"start": 1.0, "end": 1.4, "pitch": 0, "low_confidence": False}],
+        {"index": 0, "text": "hi", "dropped": False, "edited": False,
+         "notes": [{"start": 1.0, "end": 1.4, "pitch": 0, "low_confidence": False,
+                    "text": "hi", "kind": ":"}],
          "words": []},
-        {"index": 1, "text": "there", "dropped": False,
-         "notes": [{"start": 5.0, "end": 5.3, "pitch": 2, "low_confidence": True}],
+        {"index": 1, "text": "there", "dropped": False, "edited": False,
+         "notes": [{"start": 5.0, "end": 5.3, "pitch": 2, "low_confidence": True,
+                    "text": "there", "kind": ":"}],
          "words": []},
-        {"index": 2, "text": "gone", "dropped": True, "notes": [], "words": []},
+        {"index": 2, "text": "gone", "dropped": True, "edited": False, "notes": [],
+         "words": []},
     ]
     assert body["missing_spans"] == [{"start": 8.0, "end": 9.5}]
 
@@ -1872,3 +1875,105 @@ def test_a_job_is_only_reported_finished_once_it_has_finished(tmp_path, monkeypa
     job = wait_status(client, job_id, "done")
     assert job["finished_at"] is not None
     assert not (cfg.work_dir / "uploads" / job_id / "v.mp4").exists()
+
+
+def chart_runner(inp, cfg, log=print, force_from=None, stages=None):
+    """Leaves what a real build does for the editor: generated notes and a
+    chart in the work dir, and the packaged chart."""
+    from songtrace.grid import to_ultrastar
+    from songtrace.ultrastar import serialize_ultrastar
+    work = cfg.work_dir / song_slug(inp)
+    work.mkdir(parents=True, exist_ok=True)
+    notes = [{"start": 1.0, "duration": 0.5, "pitch": 0, "text": "one",
+              "low_confidence": False, "line_index": 0},
+             {"start": 3.0, "duration": 0.5, "pitch": 2, "text": "three",
+              "low_confidence": True, "line_index": 1}]
+    warnings = ["1 low-confidence note near 0:03–0:03"]
+    (work / "notes_sec.json").write_text(json.dumps(
+        {"notes": notes, "breaks": [2.0], "warnings": warnings}))
+    chart = serialize_ultrastar(to_ultrastar(notes, [2.0], 300.0, [("TITLE", inp.title)]))
+    (work / "song.txt").write_text(chart, encoding="utf-8")
+    out = cfg.output_dir / song_slug(inp)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / f"{song_slug(inp)}.txt").write_text(chart, encoding="utf-8")
+    return PipelineResult(output_dir=out, warnings=warnings)
+
+
+def make_charted_job(client, lyrics="one\nthree"):
+    job_id = client.post("/api/jobs", data={
+        "title": "T", "artist": "A", "lyrics": lyrics, "youtube_url": "http://y"}).json()["id"]
+    wait_status(client, job_id, "done")
+    return job_id
+
+
+EDIT = {"notes": [{"start": 3.1, "duration": 0.5, "pitch": 9, "text": "three",
+                   "kind": "*"}]}
+
+
+def test_saving_a_line_rewrites_both_charts(tmp_path):
+    from songtrace.ultrastar import Note, parse_ultrastar
+    client, cfg = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    resp = client.put(f"/api/jobs/{job_id}/lines/1", json=EDIT)
+    assert resp.status_code == 200
+    line = resp.json()["lines"][1]
+    assert line["edited"] and line["notes"][0]["kind"] == "*" and line["notes"][0]["pitch"] == 9
+    assert resp.json()["grid"] == {"bpm": 300.0, "gap_ms": 1000.0}
+    for txt in (cfg.work_dir / "A - T" / "song.txt", cfg.output_dir / "A - T" / "A - T.txt"):
+        notes = [n for n in parse_ultrastar(txt.read_text(encoding="utf-8")).body
+                 if isinstance(n, Note)]
+        assert [(n.kind, n.pitch) for n in notes] == [(":", 0), ("*", 9)], txt
+    # the fixed line was the one being warned about
+    assert client.get(f"/api/jobs/{job_id}").json()["warnings"] == []
+
+
+def test_reverting_a_line_returns_it_to_the_generated_notes(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    client.put(f"/api/jobs/{job_id}/lines/1", json=EDIT)
+    resp = client.delete(f"/api/jobs/{job_id}/lines/1")
+    assert resp.status_code == 200
+    line = resp.json()["lines"][1]
+    assert not line["edited"] and line["notes"][0]["pitch"] == 2
+    assert client.delete(f"/api/jobs/{job_id}/lines/1").status_code == 404
+
+
+def test_line_edits_are_checked(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    assert client.put(f"/api/jobs/{job_id}/lines/5", json=EDIT).status_code == 404
+    bad = {"notes": [{**EDIT["notes"][0], "kind": "X"}]}
+    assert client.put(f"/api/jobs/{job_id}/lines/1", json=bad).status_code == 400
+    assert client.put(f"/api/jobs/{job_id}/lines/1", json={"x": 1}).status_code == 400
+
+
+def test_a_song_cannot_be_edited_while_it_is_being_rebuilt(tmp_path):
+    gate = threading.Event()
+
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        if force_from:
+            gate.wait(timeout=5)
+        return chart_runner(inp, cfg)
+
+    client, _ = make_client(tmp_path, runner)
+    try:
+        job_id = make_charted_job(client)
+        client.post(f"/api/jobs/{job_id}/rebuild-full")
+        assert client.put(f"/api/jobs/{job_id}/lines/1", json=EDIT).status_code == 409
+    finally:
+        gate.set()
+
+
+def test_a_stale_edit_can_be_discarded(tmp_path):
+    from songtrace import edits
+    client, cfg = make_client(tmp_path, chart_runner)
+    first = make_charted_job(client)
+    client.put(f"/api/jobs/{first}/lines/1", json=EDIT)
+    # the same song again with that line's words changed
+    second = make_charted_job(client, lyrics="one\nthree more")
+    work = cfg.work_dir / "A - T"
+    assert len(edits.load(work, [["one"], ["three", "more"]])["stale"]) == 1
+    resp = client.delete(f"/api/jobs/{second}/stale/0")
+    assert resp.status_code == 200 and resp.json()["stale"] == []
+    assert not (work / edits.EDITS_FILE).exists()
+    assert client.delete(f"/api/jobs/{second}/stale/0").status_code == 404

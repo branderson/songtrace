@@ -1,13 +1,16 @@
 import json
 from pathlib import Path
 
-from .. import grid
+from .. import edits, grid
+from ..lyrics import normalize_lyrics
 from ..pipeline import Ctx, PipelineError, Stage, song_slug
 from ..ultrastar import serialize_ultrastar
 
 
 def _run(ctx: Ctx) -> None:
-    data = json.loads((ctx.work / "notes_sec.json").read_text())
+    data = edits.finalize(ctx.work, normalize_lyrics(ctx.inp.lyrics_text).lines)
+    if data["edited_lines"]:
+        ctx.log(f"[grid] kept {len(data['edited_lines'])} edited line(s)")
     meta = json.loads((ctx.work / "meta.json").read_text())
     if ctx.inp.bpm_override is not None:
         bpm = ctx.inp.bpm_override
@@ -36,5 +39,6 @@ def _run(ctx: Ctx) -> None:
 
 def grid_stage() -> Stage:
     return Stage(name="grid",
-                 outputs=lambda ctx: [ctx.work / "song.txt"],
+                 outputs=lambda ctx: [ctx.work / "song.txt",
+                                      ctx.work / edits.FINAL_FILE],
                  run=_run)

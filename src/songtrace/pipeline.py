@@ -47,7 +47,11 @@ def song_slug(inp: SongInput) -> str:
     return name.replace("/", "").replace("\0", "")
 
 def read_warnings(work: Path) -> list[str]:
-    notes_file = work / "notes_sec.json"
+    # grid's copy accounts for the user's edits; notes' is all a song built
+    # before edits existed has
+    notes_file = work / "notes_final.json"
+    if not notes_file.exists():
+        notes_file = work / "notes_sec.json"
     if not notes_file.exists():
         return []
     return json.loads(notes_file.read_text()).get("warnings", [])
