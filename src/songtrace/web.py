@@ -329,6 +329,32 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             rebuild_policy.plan(parent.inp, inp), force_from))
         return _enqueue(new_id, inp, rebuilt_from=job_id, force_stage=force_from)
 
+    @app.post("/api/rebuild-all", status_code=201)
+    def rebuild_all(force_from: str = Form(...)):
+        """Rebuild every song from `force_from` on, for when songtrace itself
+        improved that stage. Each is an ordinary rebuild with unchanged inputs."""
+        if force_from not in STAGE_ORDER:
+            raise HTTPException(400, f"unknown stage {force_from!r}")
+        with lock:
+            # a job that was rebuilt is history: its rebuild is the song now,
+            # possibly under another slug
+            rebuilt = {j.rebuilt_from for j in jobs.values()}
+            latest = {song_slug(j.inp): j for j in (jobs[i] for i in order)
+                      if j.id not in rebuilt}
+        ids, skipped = [], []
+        for job in latest.values():
+            if job.status in ("queued", "running"):
+                skipped.append({"id": job.id, "reason": "still in progress"})
+                continue
+            try:
+                _require_source(job.inp, job.inp, force_from)
+            except HTTPException as e:
+                skipped.append({"id": job.id, "reason": e.detail})
+                continue
+            ids.append(_enqueue(uuid.uuid4().hex, job.inp, rebuilt_from=job.id,
+                                force_stage=force_from)["id"])
+        return {"ids": ids, "skipped": skipped}
+
     @app.get("/api/stages")
     def list_stages():
         return {"stages": list(STAGE_ORDER)}

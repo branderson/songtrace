@@ -113,6 +113,31 @@ body {
 #sidebar .eyebrow, #jobs .empty-note { padding: 0 18px; }
 #create-song { display: block; width: calc(100% - 36px); margin: 0 18px 20px; padding: 9px 12px; }
 
+#rebuild-all { display: block; margin: -8px 18px 20px; }
+#rebuild-all-note { margin: -12px 18px 20px; }
+
+#rebuild-all-dialog {
+  max-width: 420px;
+  padding: 26px 28px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+#rebuild-all-dialog::backdrop { background: rgb(10 10 15 / 0.75); }
+#rebuild-all-dialog h2 {
+  margin: 0 0 14px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: 0.22em;
+  color: var(--text-muted);
+}
+#rebuild-all-form { display: grid; gap: 16px; }
+#rebuild-all-form p { margin: 0; font-size: 0.88rem; line-height: 1.5; }
+#rebuild-all-count { color: var(--warn); }
+#rebuild-all-error { min-height: 1.2em; color: var(--fail); }
+#rebuild-all-error:empty { display: none; }
+
 #jobs { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
 
 .job {
@@ -518,10 +543,30 @@ button { cursor: pointer; }
   </div>
   <div>
     <button type="button" id="create-song" class="primary">CREATE SONG</button>
+    <button type="button" id="rebuild-all" class="action">REBUILD ALL FROM…</button>
+    <p id="rebuild-all-note" class="empty-note" role="status" hidden></p>
     <h2 class="eyebrow">QUEUE</h2>
     <div id="jobs"></div>
   </div>
 </aside>
+
+<dialog id="rebuild-all-dialog" aria-labelledby="rebuild-all-heading">
+  <form id="rebuild-all-form" method="dialog">
+    <h2 id="rebuild-all-heading">REBUILD ALL SONGS</h2>
+    <p>Reruns every song from the chosen stage onwards with the inputs it has
+      now, for when a songtrace update improves that stage.</p>
+    <label class="field">
+      <span>Restart from</span>
+      <select name="force_from" required></select>
+    </label>
+    <p id="rebuild-all-count"></p>
+    <p id="rebuild-all-error" role="alert"></p>
+    <div class="form-actions">
+      <button type="submit" class="primary">REBUILD ALL</button>
+      <button type="button" class="action" id="rebuild-all-cancel">CANCEL</button>
+    </div>
+  </form>
+</dialog>
 
 <main id="main">
   <section id="new-song">
@@ -702,6 +747,62 @@ createSong.addEventListener("click", () => {
   form.elements.title.focus();
 });
 
+const rebuildAllButton = document.getElementById("rebuild-all");
+const rebuildAllNote = document.getElementById("rebuild-all-note");
+const rebuildAllDialog = document.getElementById("rebuild-all-dialog");
+const rebuildAllForm = document.getElementById("rebuild-all-form");
+const rebuildAllCount = document.getElementById("rebuild-all-count");
+const rebuildAllError = document.getElementById("rebuild-all-error");
+
+// The server's rule, for the count only: a rebuilt job's rebuild is the song
+// now, and two submissions of one song share it.
+function currentSongs() {
+  const rebuilt = new Set(JOBS.map(j => j.rebuilt_from));
+  const songs = new Map();
+  for (const job of [...JOBS].reverse()) {
+    if (!rebuilt.has(job.id)) songs.set(`${job.artist} - ${job.title}`, job);
+  }
+  return [...songs.values()];
+}
+
+rebuildAllButton.addEventListener("click", () => {
+  const songs = currentSongs();
+  const idle = songs.filter(j => j.status === "done" || j.status === "failed").length;
+  rebuildAllCount.textContent = idle === 1 ? "1 song will be rebuilt."
+                                           : `${idle} songs will be rebuilt.`;
+  if (idle < songs.length) {
+    rebuildAllCount.textContent += ` ${songs.length - idle} still in progress will be skipped.`;
+  }
+  rebuildAllError.textContent = "";
+  rebuildAllForm.reset();
+  rebuildAllDialog.showModal();
+});
+
+document.getElementById("rebuild-all-cancel").addEventListener(
+  "click", () => rebuildAllDialog.close());
+
+rebuildAllForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const stage = rebuildAllForm.elements.force_from.value;
+  const resp = await fetch("/api/rebuild-all", {
+    method: "POST", body: new FormData(rebuildAllForm) });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    rebuildAllError.textContent = body.detail || `error: ${resp.status}`;
+    return;
+  }
+  const { ids, skipped } = await resp.json();
+  rebuildAllDialog.close();
+  let note = `Queued ${ids.length} rebuild${ids.length === 1 ? "" : "s"} from ${stage}.`;
+  if (skipped.length) {
+    const reasons = [...new Set(skipped.map(s => s.reason))].join("; ");
+    note += ` Skipped ${skipped.length}: ${reasons}.`;
+  }
+  rebuildAllNote.textContent = note;
+  rebuildAllNote.hidden = false;
+  refreshJobs();
+});
+
 function jobCard(job) {
   const card = document.createElement("button");
   card.type = "button";
@@ -780,6 +881,8 @@ async function loadStages() {
   const select = form.elements.force_from;
   select.replaceChildren(new Option("only what changed", ""),
                          ...STAGES.map(s => new Option(s, s)));
+  rebuildAllForm.elements.force_from.replaceChildren(
+    new Option("choose a stage", ""), ...STAGES.map(s => new Option(s, s)));
 }
 
 function renderStageTrack(job) {

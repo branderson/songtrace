@@ -177,6 +177,11 @@ to redo a stage anyway — pick `package` to repackage without re-downloading.
 It can only widen what is rerun, so an edit that invalidates an earlier stage
 still wins.
 
+**REBUILD ALL FROM…**, under CREATE SONG, does the same for every song at once:
+pick the stage an update improved and each song is rebuilt from there with the
+inputs it has now. Songs still in progress are skipped, as are songs whose
+uploaded video is gone when the stage is `acquire`.
+
 ## YouTube download failures
 
 `HTTP Error 403: Forbidden` from the acquire stage means YouTube served the
