@@ -9,6 +9,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import numpy as np
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
@@ -18,6 +19,7 @@ from . import edits, grid
 from . import rebuild as rebuild_policy
 from .config import Config
 from .lyrics import normalize_lyrics
+from .notes import CONF_MASK
 from .pipeline import (STAGE_ORDER, PipelineError, SongInput, read_warnings,
                        run_pipeline, song_slug)
 from .ultrastar import get_header, parse_ultrastar
@@ -503,6 +505,26 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                  for kind, header in MEDIA_HEADERS.items()}
         return {"lines": lines, "missing_spans": missing_spans, "media": media,
                 "stale": stale, "grid": _chart_grid(work)}
+
+    @app.get("/api/jobs/{job_id}/pitch")
+    def get_pitch(job_id: str):
+        """The detected vocal pitch, to draw behind the notes: UltraStar
+        semitones (0 = C4) every `step` seconds, null where nothing is sung."""
+        job = _finished_job(job_id)
+        path = cfg.work_dir / song_slug(job.inp) / "pitch.npz"
+        if not path.exists():
+            raise HTTPException(404)
+        data = np.load(path)
+        times, f0, conf = data["times"], data["f0"], data["conf"]
+        # every other 10ms frame is still finer than a note can be drawn
+        stride = 2
+        f0, conf = f0[::stride], conf[::stride]
+        voiced = (conf >= CONF_MASK) & (f0 > 0)
+        semis = 9 + 12 * np.log2(np.where(voiced, f0, 440.0) / 440.0)
+        hop = float(times[1] - times[0]) if len(times) > 1 else 0.01
+        return {"start": float(times[0]) if len(times) else 0.0, "step": hop * stride,
+                "pitch": [round(float(v), 2) if ok else None
+                          for v, ok in zip(semis, voiced)]}
 
     def _chart_grid(work: Path) -> dict | None:
         """The beat grid the chart was built on, for snapping edits to it."""

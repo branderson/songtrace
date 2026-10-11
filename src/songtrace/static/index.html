@@ -392,6 +392,67 @@ button { cursor: pointer; }
 /* the native transport renders light otherwise, against everything around it */
 #player-media { display: block; width: 100%; margin-top: 8px; color-scheme: dark; }
 
+#sheet { margin: 14px 0; padding: 12px 14px 10px; background: var(--panel); border: 1px solid var(--border); }
+#sheet[hidden] { display: none; }
+.sheet-nav { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.sheet-title {
+  min-width: 9em;
+  text-align: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+}
+.sheet-nav .action:disabled { opacity: 0.35; cursor: default; }
+.sheet-badges { display: flex; gap: 8px; margin-left: auto; }
+.sheet-badge {
+  padding: 2px 8px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+.sheet-badge-edited { color: var(--aqua); }
+.sheet-badge-low { color: var(--fail); }
+.sheet-plot { position: relative; cursor: crosshair; }
+.sheet-svg { display: block; }
+.sheet-row { fill: var(--panel-raised); }
+.sheet-row-black { fill: var(--bg); }
+.sheet-octave { stroke: var(--control); stroke-width: 1; }
+.sheet-key { fill: var(--text-muted); font: 10px var(--font-mono); text-anchor: end; dominant-baseline: middle; }
+.sheet-key-c { fill: var(--text); font-weight: 600; }
+.sheet-beat { stroke: var(--border); stroke-width: 1; opacity: 0.35; }
+.sheet-beat-1 { stroke: var(--control); opacity: 0.55; }
+.sheet-beat-2 { stroke: var(--text-muted); opacity: 0.8; }
+.sheet-curve { pointer-events: none; }
+.sheet-curve polyline { fill: none; stroke: var(--aqua); stroke-width: 1.5; opacity: 0.9; }
+.sheet-note { fill: var(--purple); }
+.sheet-note-golden { fill: #E8B931; }
+.sheet-note-free { fill: none; stroke: var(--purple); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.sheet-note-rap { fill: var(--aqua); }
+.sheet-note-golden-rap { fill: #E8B931; stroke: var(--aqua); stroke-width: 2; }
+.sheet-note-low { stroke: var(--fail); stroke-width: 2; stroke-dasharray: 3 2; }
+.sheet-note-context { opacity: 0.28; }
+.sheet-playhead { position: absolute; top: 0; height: 300px; width: 2px; margin-left: -1px; background: var(--aqua); pointer-events: none; }
+.sheet-playhead[hidden] { display: none; }
+.sheet-syllables, .sheet-words { position: relative; overflow: hidden; }
+.sheet-syllables { height: 20px; margin-top: 6px; }
+.sheet-syllable { position: absolute; top: 0; font-size: 0.8rem; white-space: pre; color: var(--text); }
+.sheet-words { height: 24px; margin-top: 4px; }
+.sheet-word {
+  position: absolute;
+  top: 0;
+  padding-top: 4px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  color: var(--text-muted);
+  border-top: 2px solid var(--border);
+}
+
 #lyrics-review { display: flex; flex-direction: column; gap: 10px; }
 .review-line { padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); }
 .review-line-active { background: var(--panel-raised); border-color: var(--aqua); }
@@ -658,6 +719,7 @@ button { cursor: pointer; }
       <video id="player-video" muted playsinline preload="metadata"></video>
       <audio id="player-media" controls preload="metadata"></audio>
     </div>
+    <div id="sheet" hidden></div>
     <div id="lyrics-review"><p class="empty-note">no songs queued yet — nothing to review</p></div>
     <div id="output-path"></div>
     <div id="review-actions"></div>
@@ -1151,6 +1213,7 @@ function lineEntry(row, line) {
   const labels = [...row.querySelectorAll(".review-word")];
   return {
     row,
+    index: line.index,
     t0: laid[0].start,
     t1: Math.max(...laid.map(x => x.end)),
     words: line.words.map((w, i) => ({ el: labels[i], start: w.start, end: w.end })),
@@ -1196,6 +1259,17 @@ const player = document.getElementById("player");
 const media = document.getElementById("player-media");
 const video = document.getElementById("player-video");
 const DRIFT = 0.25;  // seconds before the picture is worth re-seeking
+
+// the note sheet lives in its own module, loaded before any review renders
+let sheet = null;
+const sheetReady = import("/static/sheet.js").then((m) => {
+  sheet = m.createSheet(document.getElementById("sheet"), {
+    seek: (t) => {
+      media.currentTime = t;
+      if (media.paused) syncPlayback();
+    },
+  });
+});
 
 function slaveVideo(force) {
   if (video.hidden || !video.getAttribute("src")) return;
@@ -1251,10 +1325,12 @@ function syncPlayback() {
     activeEntry = entry;
     if (entry) {
       entry.row.classList.add("review-line-active");
+      sheet?.showLine(entry.index);
       focusActive();
     }
   }
   if (entry) paintEntry(entry, t);
+  sheet?.setTime(t);
 }
 
 // centred so there is context either side, like a scrolling lyric sheet; only
@@ -1314,6 +1390,7 @@ function setPlayerSource(job, available) {
 }
 
 function resetPlayer() {
+  sheet?.clear();
   // the 3s poll reaches here for every running job; reloading a cleared
   // element each time would be pure churn
   if (player.hidden && !timeline.length) return;
@@ -1361,6 +1438,9 @@ async function renderLyricsReview(job) {
   }
   const { nodes, entries } = buildLyricsReview(data);
   box.replaceChildren(...nodes);
+  await sheetReady;
+  if (job.id !== selectedId) return;
+  sheet.load(job.id, data);
   // with nothing to play, a highlighted line and a click-to-seek cursor would
   // both be promising something the song folder cannot deliver
   const playable = setPlayerSource(job, data.media);

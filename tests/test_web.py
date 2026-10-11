@@ -1977,3 +1977,29 @@ def test_a_stale_edit_can_be_discarded(tmp_path):
     assert resp.status_code == 200 and resp.json()["stale"] == []
     assert not (work / edits.EDITS_FILE).exists()
     assert client.delete(f"/api/jobs/{second}/stale/0").status_code == 404
+
+
+def test_pitch_curve_is_in_note_semitones_with_gaps_where_unvoiced(tmp_path):
+    import numpy as np
+
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        result = chart_runner(inp, cfg)
+        times = np.arange(0, 0.1, 0.01)
+        f0 = np.array([440.0] * 4 + [261.63] * 4 + [0.0] * 2)   # A4, C4, nothing
+        conf = np.array([0.9] * 4 + [0.9, 0.9, 0.1, 0.1] + [0.9] * 2)
+        np.savez(cfg.work_dir / song_slug(inp) / "pitch.npz", times=times, f0=f0, conf=conf)
+        return result
+
+    client, _ = make_client(tmp_path, runner)
+    job_id = make_charted_job(client)
+    body = client.get(f"/api/jobs/{job_id}/pitch").json()
+    assert body["start"] == 0.0 and body["step"] == pytest.approx(0.02)
+    assert body["pitch"][:2] == [9.0, 9.0]                  # A4 is 9 above C4
+    assert body["pitch"][2] == pytest.approx(0.0, abs=0.01)  # C4
+    assert body["pitch"][3:] == [None, None]                # unsure, then silent
+
+
+def test_pitch_curve_is_404_without_a_pitch_track(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    assert client.get(f"/api/jobs/{job_id}/pitch").status_code == 404
