@@ -1,0 +1,86 @@
+name: tests
+
+# `pull_request_target` reads this file from the base branch, so a pull
+# request cannot change what runs or where (including `runs-on:`). The run's
+# ref is therefore the base branch, and the checkout has to name the head.
+on:
+  pull_request_target:
+
+jobs:
+  test:
+    # No Docker socket, and egress limited to .dejima/allowed-domains on main.
+    runs-on: dejima-confined
+
+    # Node for actions/checkout; Debian bookworm's python3 is the 3.11 the
+    # Dockerfile ships.
+    container:
+      image: node:22-bookworm
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # Inline rather than a script in the repository: the files come from the
+      # branch under test, so a script would be missing from older branches.
+      - name: Check the hosts this job fetches from are reachable
+        run: |
+          set -u
+          bad=""
+          for host in deb.debian.org security.debian.org pypi.org \
+                      files.pythonhosted.org download.pytorch.org \
+                      download-r2.pytorch.org; do
+            resolved=""
+            for attempt in 1 2 3 4; do
+              getent hosts "$host" >/dev/null 2>&1 && { resolved=yes; break; }
+              sleep 2
+            done
+            if [ -z "$resolved" ]; then
+              echo "no    $host - does not resolve"; bad="$bad $host(dns)"; continue
+            fi
+            # Any HTTP answer proves the connection; curl reports 000 for none.
+            code="$(curl -sS -o /dev/null --max-time 20 --retry 2 -w '%{http_code}' "https://$host/" 2>/dev/null || true)"
+            case "${code:-000}" in
+              000) echo "no    $host - resolves, but nothing answered over https"
+                   bad="$bad $host(net)" ;;
+              *)   echo "ok    $host (http $code)" ;;
+            esac
+          done
+          [ -z "$bad" ] && exit 0
+          {
+            echo
+            echo "Unreachable:$bad"
+            echo
+            echo "The confined tier reaches only what .dejima/allowed-domains on"
+            echo "main declares, rendered onto the runner separately from the"
+            echo "merge. On the runner:"
+            echo "  sudo dejima-ci-allowlist show    - is the name listed?"
+            echo "  sudo dejima-ci-allowlist check   - is a change pending?"
+            echo "  sudo dejima-ci-allowlist render  - apply it now"
+            echo "A (dns) failure is the resolver; a (net) one is the packet"
+            echo "filter, which sudo dejima-ci-firewall reapplies."
+            echo
+            echo "download.pytorch.org redirects its wheels to"
+            echo "download-r2.pytorch.org, so both have to be allowed."
+          } >&2
+          exit 1
+
+      - name: Install Python
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3 python3-venv
+          python3 -m venv /opt/venv
+          # bookworm's pip 23.0 rejects the PyTorch index's typing_extensions
+          # wheel over its name's spelling, then cannot build it from source
+          /opt/venv/bin/pip install --retries 5 --upgrade pip
+          echo /opt/venv/bin >> "$GITHUB_PATH"
+
+      # The CPU build first: torch from PyPI is the CUDA build, several GB of
+      # libraries no test uses. The install below then finds torch satisfied.
+      - name: Install CPU-only torch
+        run: pip install --retries 5 torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install songtrace
+        run: pip install --retries 5 -e '.[dev]'
+
+      - run: pytest

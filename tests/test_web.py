@@ -834,7 +834,7 @@ def test_narrow_stage_labels_stay_in_the_accessibility_tree():
 
 def test_rebuild_mode_reuses_the_one_form():
     html = _index_html()
-    assert html.count("<form") == 1
+    assert html.count('name="lyrics"') == 1    # one song form, not a rebuild copy
     assert _rebuild_flaws(html) == []
 
 
@@ -1746,3 +1746,109 @@ def test_submitting_crlf_lyrics_stores_them_with_lf(tmp_path):
     client, _ = make_client(tmp_path, ok_runner)
     job_id = make_done_job(client, lyrics="one\r\ntwo")
     assert client.get(f"/api/jobs/{job_id}/input").json()["lyrics"] == "one\ntwo"
+
+
+def test_rebuild_all_rebuilds_every_song_from_the_stage(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, capture_runner_factory(seen))
+    first = make_done_job(client, title="One")
+    second = make_done_job(client, title="Two")
+    resp = client.post("/api/rebuild-all", data={"force_from": "pitch"})
+    assert resp.status_code == 201
+    body = resp.json()
+    assert len(body["ids"]) == 2 and body["skipped"] == []
+    jobs = [wait_status(client, i, "done") for i in body["ids"]]
+    assert {j["rebuilt_from"] for j in jobs} == {first, second}
+    assert [s["force_from"] for s in seen[2:]] == ["pitch", "pitch"]
+    by_title = lambda runs: sorted((r["inp"] for r in runs), key=lambda i: i.title)
+    assert by_title(seen[2:]) == by_title(seen[:2])
+
+
+def test_rebuild_all_skips_jobs_that_were_already_rebuilt(tmp_path):
+    client, _ = make_client(tmp_path, capture_runner_factory([]))
+    parent = make_done_job(client)
+    renamed = client.post(f"/api/jobs/{parent}/rebuild",
+                          data=rebuild_form(title="Renamed")).json()["id"]
+    wait_status(client, renamed, "done")
+    body = client.post("/api/rebuild-all", data={"force_from": "notes"}).json()
+    assert len(body["ids"]) == 1
+    job = wait_status(client, body["ids"][0], "done")
+    assert job["rebuilt_from"] == renamed
+
+
+def test_rebuild_all_takes_the_latest_job_for_a_song(tmp_path):
+    client, _ = make_client(tmp_path, capture_runner_factory([]))
+    make_done_job(client)
+    latest = make_done_job(client)
+    body = client.post("/api/rebuild-all", data={"force_from": "grid"}).json()
+    assert len(body["ids"]) == 1
+    assert wait_status(client, body["ids"][0], "done")["rebuilt_from"] == latest
+
+
+def test_rebuild_all_skips_songs_in_progress(tmp_path):
+    gate = threading.Event()
+
+    def blocking_runner(inp, cfg, log=print, force_from=None, stages=None):
+        gate.wait(timeout=5)
+        return PipelineResult(output_dir=cfg.output_dir / song_slug(inp))
+
+    client, _ = make_client(tmp_path, blocking_runner)
+    try:
+        busy = client.post("/api/jobs", data={
+            "title": "T", "artist": "A", "lyrics": "x", "youtube_url": "http://y"}).json()["id"]
+        body = client.post("/api/rebuild-all", data={"force_from": "pitch"}).json()
+        assert body == {"ids": [], "skipped": [{"id": busy, "reason": "still in progress"}]}
+    finally:
+        gate.set()
+
+
+def test_rebuild_all_from_acquire_skips_a_song_whose_upload_is_gone(tmp_path):
+    client, _ = make_client(tmp_path, capture_runner_factory([]))
+    job_id = client.post("/api/jobs", data={"title": "T", "artist": "A", "lyrics": "x"},
+                         files={"video": ("v.mp4", io.BytesIO(b"data"), "video/mp4")}
+                         ).json()["id"]
+    wait_status(client, job_id, "done")
+    shutil.rmtree(tmp_path / "work" / "uploads", ignore_errors=True)
+    body = client.post("/api/rebuild-all", data={"force_from": "acquire"}).json()
+    assert body["ids"] == []
+    assert body["skipped"][0]["id"] == job_id
+    assert "upload" in body["skipped"][0]["reason"]
+
+
+def test_rebuild_all_rejects_an_unknown_stage(tmp_path):
+    client, _ = make_client(tmp_path, ok_runner)
+    make_done_job(client)
+    assert client.post("/api/rebuild-all", data={"force_from": "nope"}).status_code == 400
+    assert client.post("/api/rebuild-all", data={}).status_code == 422
+
+
+def test_rebuild_all_lists_the_current_job_of_each_song(tmp_path):
+    client, _ = make_client(tmp_path, capture_runner_factory([]))
+    one = make_done_job(client, title="One")
+    two = make_done_job(client, title="Two")
+    rerun = client.post(f"/api/jobs/{one}/rerun").json()["id"]
+    wait_status(client, rerun, "done")
+    songs = client.get("/api/rebuild-all").json()
+    assert [(s["id"], s["title"], s["rebuilt_from"]) for s in songs] == [
+        (rerun, "One", one), (two, "Two", None)]
+    assert all(s["status"] == "done" and s["finished_at"] for s in songs)
+
+
+def test_rebuild_all_rebuilds_only_the_songs_selected(tmp_path):
+    client, _ = make_client(tmp_path, capture_runner_factory([]))
+    make_done_job(client, title="One")
+    two = make_done_job(client, title="Two")
+    resp = client.post("/api/rebuild-all", data={"force_from": "pitch", "ids": [two]})
+    body = resp.json()
+    assert len(body["ids"]) == 1 and body["skipped"] == []
+    assert wait_status(client, body["ids"][0], "done")["rebuilt_from"] == two
+
+
+def test_rebuild_all_reports_a_selected_job_that_was_since_rebuilt(tmp_path):
+    client, _ = make_client(tmp_path, capture_runner_factory([]))
+    old = make_done_job(client)
+    rerun = client.post(f"/api/jobs/{old}/rerun").json()["id"]
+    wait_status(client, rerun, "done")
+    body = client.post("/api/rebuild-all", data={"force_from": "pitch", "ids": [old]}).json()
+    assert body == {"ids": [], "skipped": [
+        {"id": old, "reason": "no longer the current job for its song"}]}
