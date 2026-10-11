@@ -1,11 +1,23 @@
 import json
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 from songtrace.config import Config
 from songtrace.lyrics import normalize_lyrics
 from songtrace.pipeline import Ctx, PipelineError, SongInput
 from songtrace.stages import align
+from songtrace.whisper_client import TranscriptSegment
+
+REAL_UNTRANSCRIBED_SINGING = align.untranscribed_singing
+
+
+@pytest.fixture(autouse=True)
+def no_untranscribed_singing(monkeypatch):
+    """The tests have no vocals.wav; those about missed singing set their own."""
+    monkeypatch.setattr(align, "untranscribed_singing", lambda vocals, segments: [])
+
 
 LYRICS = "it's one two three\nfour five six seven eight"
 
@@ -160,3 +172,44 @@ def test_align_flags_missing_span_for_unmatched_singing(tmp_path, monkeypatch):
     meta = json.loads((tmp_path / "w" / "align_meta.json").read_text())
     assert meta["dropped_lines"] == []
     assert meta["missing_spans"] == [[19.0, 24.0]]
+
+
+def _tone(seconds, sr, level):
+    t = np.arange(int(seconds * sr)) / sr
+    return level * np.sin(2 * np.pi * 220 * t)
+
+
+def test_untranscribed_singing_finds_sung_audio_the_transcript_skips(
+        tmp_path):
+    sr = 16000
+    rng = np.random.default_rng(0)
+    audio = np.concatenate([
+        _tone(2, sr, 0.3),           # 0-2s: sung and transcribed
+        np.zeros(2 * sr),            # 2-4s: silence
+        _tone(5, sr, 0.3),           # 4-9s: sung, never transcribed
+        np.zeros(3 * sr),            # 9-12s: silence
+        _tone(1, sr, 0.3),           # 12-13s: too short to count
+        np.zeros(3 * sr),
+    ]) + 0.001 * rng.standard_normal(16 * sr)   # separation bleed
+    path = tmp_path / "vocals.wav"
+    sf.write(path, audio.astype(np.float32), sr)
+    segments = [TranscriptSegment(0.0, 2.0, "one two")]
+    spans = REAL_UNTRANSCRIBED_SINGING(path, segments)
+    assert len(spans) == 1
+    assert spans[0][0] == pytest.approx(4.0, abs=0.1)
+    assert spans[0][1] == pytest.approx(9.0, abs=0.1)
+
+
+def test_lines_whisper_missed_are_aligned_in_the_untranscribed_singing(
+        tmp_path, monkeypatch):
+    lyrics = "one two three\nfour five six\nseven eight nine"
+    transcript = [{"start": 1.0, "end": 3.0, "text": "one two three"},
+                  {"start": 40.0, "end": 42.0, "text": "seven eight nine"}]
+    monkeypatch.setattr(align, "untranscribed_singing",
+                        lambda vocals, segments: [(20.0, 26.0)])
+    rows = run_align(tmp_path, monkeypatch, lyrics, transcript)
+    check_invariants(rows, lyrics)
+    middle = [r for r in rows if r["line_index"] == 1]
+    assert all(19.0 <= r["start"] and r["end"] <= 27.0 for r in middle)
+    meta = json.loads((tmp_path / "w" / "align_meta.json").read_text())
+    assert meta["dropped_lines"] == []

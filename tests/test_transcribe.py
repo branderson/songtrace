@@ -1,6 +1,7 @@
 from songtrace.lyrics import normalize_lyrics
 from songtrace.whisper_client import TranscriptSegment
-from songtrace.stages.transcribe import classify_lyrics_match, lyrics_similarity, vocal_sections
+from songtrace.stages.transcribe import (classify_lyrics_match, lyrics_similarity,
+                                         recovered_spans, vocal_sections)
 
 def seg(s, e, t=""):
     return TranscriptSegment(start=s, end=e, text=t)
@@ -64,3 +65,31 @@ def test_classify_lyrics_match_scopes_missing_span_to_adlib_not_whole_section():
     assert missing == [(5.0, 9.0)]
     for a, b in missing:
         assert not (a <= 1.0 < b)        # matched line's start (1.0) untouched
+
+
+THREE_LINES = "one two three\nfour five six\nseven eight nine"
+
+
+def test_lines_whisper_missed_are_kept_when_singing_went_untranscribed():
+    ref = normalize_lyrics(THREE_LINES)
+    segs = [seg(0, 2, "one two three"), seg(20, 22, "seven eight nine")]
+    assert classify_lyrics_match(segs, ref)[0] == [1]
+    dropped, _ = classify_lyrics_match(segs, ref, unheard=[(8.0, 14.0)])
+    assert dropped == []
+
+
+def test_untranscribed_singing_elsewhere_does_not_keep_a_line():
+    ref = normalize_lyrics(THREE_LINES)
+    segs = [seg(0, 2, "one two three"), seg(20, 22, "seven eight nine")]
+    dropped, _ = classify_lyrics_match(segs, ref, unheard=[(30.0, 35.0)])
+    assert dropped == [1]
+
+
+def test_recovered_spans_are_the_singing_between_heard_neighbours():
+    ref = normalize_lyrics(THREE_LINES)
+    segs = [seg(10, 12, "four five six"), seg(20, 22, "seven eight nine")]
+    unheard = [(3.0, 9.0), (14.0, 18.0), (30.0, 35.0)]
+    # line 0 comes before anything heard, so only the singing before line 1
+    # can stand in for it; the other spans have no missing line around them
+    assert recovered_spans(segs, ref, unheard) == [(3.0, 9.0)]
+    assert classify_lyrics_match(segs, ref, unheard=unheard)[0] == []
