@@ -113,6 +113,61 @@ body {
 #sidebar .eyebrow, #jobs .empty-note { padding: 0 18px; }
 #create-song { display: block; width: calc(100% - 36px); margin: 0 18px 20px; padding: 9px 12px; }
 
+#rebuild-all { display: block; margin: -8px 18px 20px; }
+#rebuild-all-note { margin: -12px 18px 20px; }
+
+#rebuild-all-dialog {
+  width: min(480px, calc(100vw - 32px));
+  padding: 26px 28px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+#rebuild-all-dialog::backdrop { background: rgb(10 10 15 / 0.75); }
+#rebuild-all-dialog h2 {
+  margin: 0 0 14px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: 0.22em;
+  color: var(--text-muted);
+}
+#rebuild-all-form { display: grid; gap: 16px; }
+#rebuild-all-form p { margin: 0; font-size: 0.88rem; line-height: 1.5; }
+#rebuild-all-count { color: var(--warn); }
+#rebuild-all-songs { margin: 0; padding: 0; border: 0; min-width: 0; }
+#rebuild-all-songs legend {
+  margin-bottom: 6px;
+  padding: 0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+#rebuild-all-list {
+  max-height: 40vh;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.rebuild-all-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 10px;
+  align-items: baseline;
+  padding: 7px 4px;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+.rebuild-all-row input { accent-color: var(--purple); }
+.rebuild-all-row:has(input:disabled) { cursor: default; color: var(--text-muted); }
+.rebuild-all-row .meta { grid-column: 2; font-size: 0.76rem; color: var(--text-muted); }
+.rebuild-all-every { padding-top: 0; color: var(--text-muted); }
+#rebuild-all-error { min-height: 1.2em; color: var(--fail); }
+#rebuild-all-error:empty { display: none; }
+
 #jobs { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
 
 .job {
@@ -518,10 +573,38 @@ button { cursor: pointer; }
   </div>
   <div>
     <button type="button" id="create-song" class="primary">CREATE SONG</button>
+    <button type="button" id="rebuild-all" class="action">REBUILD ALL FROM…</button>
+    <p id="rebuild-all-note" class="empty-note" role="status" hidden></p>
     <h2 class="eyebrow">QUEUE</h2>
     <div id="jobs"></div>
   </div>
 </aside>
+
+<dialog id="rebuild-all-dialog" aria-labelledby="rebuild-all-heading">
+  <form id="rebuild-all-form" method="dialog">
+    <h2 id="rebuild-all-heading">REBUILD ALL SONGS</h2>
+    <p>Reruns the songs ticked below from the chosen stage onwards with the
+      inputs they have now, for when a songtrace update improves that stage.</p>
+    <label class="field">
+      <span>Restart from</span>
+      <select name="force_from" required></select>
+    </label>
+    <fieldset id="rebuild-all-songs">
+      <legend>Songs</legend>
+      <label class="rebuild-all-row rebuild-all-every">
+        <input type="checkbox" id="rebuild-all-toggle" checked>
+        <span>All songs</span>
+      </label>
+      <div id="rebuild-all-list"></div>
+    </fieldset>
+    <p id="rebuild-all-count"></p>
+    <p id="rebuild-all-error" role="alert"></p>
+    <div class="form-actions">
+      <button type="submit" class="primary">REBUILD SELECTED</button>
+      <button type="button" class="action" id="rebuild-all-cancel">CANCEL</button>
+    </div>
+  </form>
+</dialog>
 
 <main id="main">
   <section id="new-song">
@@ -702,6 +785,95 @@ createSong.addEventListener("click", () => {
   form.elements.title.focus();
 });
 
+const rebuildAllButton = document.getElementById("rebuild-all");
+const rebuildAllNote = document.getElementById("rebuild-all-note");
+const rebuildAllDialog = document.getElementById("rebuild-all-dialog");
+const rebuildAllForm = document.getElementById("rebuild-all-form");
+const rebuildAllCount = document.getElementById("rebuild-all-count");
+const rebuildAllError = document.getElementById("rebuild-all-error");
+
+const rebuildAllList = document.getElementById("rebuild-all-list");
+const rebuildAllToggle = document.getElementById("rebuild-all-toggle");
+const rebuildAllSubmit = rebuildAllForm.querySelector("button[type=submit]");
+
+function rebuildAllBoxes() {
+  return [...rebuildAllList.querySelectorAll("input:not(:disabled)")];
+}
+
+function updateRebuildAllCount() {
+  const boxes = rebuildAllBoxes();
+  const chosen = boxes.filter(b => b.checked).length;
+  rebuildAllToggle.checked = chosen === boxes.length && chosen > 0;
+  rebuildAllToggle.indeterminate = chosen > 0 && chosen < boxes.length;
+  rebuildAllCount.textContent = chosen === 1 ? "1 song will be rebuilt."
+                                             : `${chosen} songs will be rebuilt.`;
+  // with nothing ticked no ids are sent, which the API reads as every song
+  rebuildAllSubmit.disabled = chosen === 0;
+}
+
+function rebuildAllRow(song) {
+  const busy = song.status === "queued" || song.status === "running";
+  const row = document.createElement("label");
+  row.className = "rebuild-all-row";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.name = "ids";
+  box.value = song.id;
+  box.checked = !busy;
+  box.disabled = busy;
+  const name = document.createElement("span");
+  name.textContent = `${song.title} · ${song.artist}`;
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  const when = song.finished_at && new Date(song.finished_at * 1000).toLocaleString(
+    undefined, { dateStyle: "medium", timeStyle: "short" });
+  meta.textContent = busy ? "in progress, skipped"
+    : `${song.status === "failed" ? "failed" : song.rebuilt_from ? "rebuilt" : "built"} ${when || ""}`.trim();
+  row.append(box, name, meta);
+  return row;
+}
+
+rebuildAllButton.addEventListener("click", async () => {
+  rebuildAllError.textContent = "";
+  rebuildAllForm.reset();
+  const resp = await fetch("/api/rebuild-all");
+  const songs = resp.ok ? await resp.json() : [];
+  rebuildAllList.replaceChildren(...songs.map(rebuildAllRow));
+  updateRebuildAllCount();
+  rebuildAllDialog.showModal();
+});
+
+rebuildAllList.addEventListener("change", updateRebuildAllCount);
+rebuildAllToggle.addEventListener("change", () => {
+  for (const box of rebuildAllBoxes()) box.checked = rebuildAllToggle.checked;
+  updateRebuildAllCount();
+});
+
+document.getElementById("rebuild-all-cancel").addEventListener(
+  "click", () => rebuildAllDialog.close());
+
+rebuildAllForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const stage = rebuildAllForm.elements.force_from.value;
+  const resp = await fetch("/api/rebuild-all", {
+    method: "POST", body: new FormData(rebuildAllForm) });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    rebuildAllError.textContent = body.detail || `error: ${resp.status}`;
+    return;
+  }
+  const { ids, skipped } = await resp.json();
+  rebuildAllDialog.close();
+  let note = `Queued ${ids.length} rebuild${ids.length === 1 ? "" : "s"} from ${stage}.`;
+  if (skipped.length) {
+    const reasons = [...new Set(skipped.map(s => s.reason))].join("; ");
+    note += ` Skipped ${skipped.length}: ${reasons}.`;
+  }
+  rebuildAllNote.textContent = note;
+  rebuildAllNote.hidden = false;
+  refreshJobs();
+});
+
 function jobCard(job) {
   const card = document.createElement("button");
   card.type = "button";
@@ -780,6 +952,8 @@ async function loadStages() {
   const select = form.elements.force_from;
   select.replaceChildren(new Option("only what changed", ""),
                          ...STAGES.map(s => new Option(s, s)));
+  rebuildAllForm.elements.force_from.replaceChildren(
+    new Option("choose a stage", ""), ...STAGES.map(s => new Option(s, s)));
 }
 
 function renderStageTrack(job) {
