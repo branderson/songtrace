@@ -7,7 +7,17 @@ import pyphen
 from .languages import LANGUAGES
 
 CONF_MASK = 0.5          # pitch frames below this are unvoiced
-LOW_SCORE = 0.5          # word alignment score below this -> low_confidence
+# A word is low-confidence when it scores below this share of the song's
+# median alignment score: the scale differs a lot from song to song, so no
+# fixed cutoff holds across them.
+LOW_SCORE_OF_MEDIAN = 0.25
+# ...or when no one sings a word that fast, or it was stretched over more than
+# it can be holding.
+MIN_WORD_SEC = 0.08
+MAX_WORD_SEC = 3.0
+# Flagged notes closer than this share one warning, so the list reads as
+# places to look rather than one line per note.
+WARN_GAP_SEC = 2.0
 SPLIT_SEMITONES = 0.8
 MIN_SEG_SEC = 0.05
 MIN_NOTE_SEC = 0.05      # alignment may hand us zero-length words
@@ -84,6 +94,7 @@ def build_notes(rows: list[dict], times, f0, conf, language: str | None,
                 ) -> tuple[list[TimedNote], list[float], list[str]]:
     notes: list[TimedNote] = []
     breaks: list[float] = []
+    floor = LOW_SCORE_OF_MEDIAN * float(np.median([r["score"] for r in rows])) if rows else 0.0
     prev_line, prev_end = None, 0.0
     for row in rows:
         if prev_line is not None and row["line_index"] > prev_line:
@@ -97,7 +108,8 @@ def build_notes(rows: list[dict], times, f0, conf, language: str | None,
                                _text(row["word"], 0, line_initial), True,
                                row["line_index"]))
             continue
-        low = row["score"] < LOW_SCORE
+        low = (row["score"] < floor
+               or not MIN_WORD_SEC <= row["end"] - row["start"] <= MAX_WORD_SEC)
         sylls = syllabify(row["word"], language)
         if len(segs) < len(sylls):
             segs = _subdivide(segs, len(sylls))
@@ -160,16 +172,19 @@ def _fmt(t: float) -> str:
 
 def _warnings(notes: list[TimedNote], dropped_lines=(), missing_spans=(),
              ref_lines=()) -> list[str]:
-    warnings, run = [], []
-    for n in list(notes) + [None]:
-        if n is not None and n.low_confidence:
-            run.append(n)
-        elif run:
-            first, last = run[0], run[-1]
-            warnings.append(
-                f"{len(run)} low-confidence note{'' if len(run) == 1 else 's'} "
-                f"near {_fmt(first.start)}–{_fmt(last.start + last.duration)}")
-            run = []
+    runs: list[list[TimedNote]] = []
+    for n in notes:
+        if not n.low_confidence:
+            continue
+        last = runs[-1][-1] if runs else None
+        if last is not None and n.start - (last.start + last.duration) < WARN_GAP_SEC:
+            runs[-1].append(n)
+        else:
+            runs.append([n])
+    warnings = [
+        f"{len(run)} low-confidence note{'' if len(run) == 1 else 's'} "
+        f"near {_fmt(run[0].start)}–{_fmt(run[-1].start + run[-1].duration)}"
+        for run in runs]
     for group in _consecutive_runs(dropped_lines):
         n = len(group)
         text = " ".join(ref_lines[group[0]]) if group[0] < len(ref_lines) else ""
