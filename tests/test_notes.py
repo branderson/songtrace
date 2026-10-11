@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from songtrace.config import Config
 from songtrace.notes import (
-    MIN_NOTE_SEC, TimedNote, build_notes, hz_to_ultrastar, segment_span,
+    MIN_NOTE_SEC, TimedNote, _warnings, build_notes, hz_to_ultrastar, segment_span,
     syllabify,
 )
 from songtrace.pipeline import Ctx, SongInput
@@ -127,11 +127,36 @@ def test_build_notes_unvoiced_word_flagged():
     assert warnings[0] == "1 low-confidence note near 0:01–0:01"
 
 
-def test_build_notes_low_score_word_flagged():
+def _scored_rows(scores, dur=0.4):
+    return [{"word": w, "start": 1.0 + i, "end": 1.0 + i + dur, "score": sc,
+             "line_index": 0}
+            for i, (w, sc) in enumerate(zip(["one", "two", "three", "four", "five"], scores))]
+
+
+def test_build_notes_flags_a_word_scoring_far_below_the_rest():
     times, f0, conf = flat_pitch()
-    rows = [{"word": "hey", "start": 1.0, "end": 1.4, "score": 0.1, "line_index": 0}]
-    notes, _, warnings = build_notes(rows, times, f0, conf, "English")
-    assert all(n.low_confidence for n in notes) and len(warnings) == 1
+    notes, _, warnings = build_notes(_scored_rows([0.4, 0.4, 0.05, 0.4, 0.4]),
+                                     times, f0, conf, "English")
+    assert [n.low_confidence for n in notes] == [False, False, True, False, False]
+    assert len(warnings) == 1
+
+
+def test_build_notes_judges_scores_against_the_song_not_a_fixed_cutoff():
+    # sung vocals score low throughout; uniformly low is not a reason to flag
+    times, f0, conf = flat_pitch()
+    notes, _, warnings = build_notes(_scored_rows([0.05] * 5), times, f0, conf, "English")
+    assert not any(n.low_confidence for n in notes) and warnings == []
+
+
+def test_build_notes_flags_words_too_short_or_too_long_to_be_sung():
+    times, f0, conf = flat_pitch()
+    for dur in (0.05, 3.5):
+        rows = _scored_rows([0.4] * 3)
+        rows[1]["end"] = rows[1]["start"] + dur
+        rows[2]["start"], rows[2]["end"] = rows[1]["end"] + 0.1, rows[1]["end"] + 0.5
+        notes, _, _ = build_notes(rows, times, f0, conf, "English")
+        # flat pitch: one note per word
+        assert [n.low_confidence for n in notes] == [False, True, False], dur
 
 
 def test_build_notes_unvoiced_word_inherits_previous_pitch():
@@ -334,3 +359,13 @@ def test_notes_carry_line_index():
     rows = [{"word": "hey", "start": 1.0, "end": 1.4, "score": 0.9, "line_index": 3}]
     notes, _, _ = build_notes(rows, times, f0, conf, "English")
     assert notes[0].line_index == 3
+
+
+def test_warnings_group_flagged_notes_close_together():
+    def note(start, low):
+        return TimedNote(start, 0.3, 0, "la", low, 0)
+    notes = [note(10.0, True), note(10.5, False), note(11.0, True),   # 0.7s apart
+             note(20.0, True)]                                       # far from both
+    assert _warnings(notes) == [
+        "2 low-confidence notes near 0:10–0:11",
+        "1 low-confidence note near 0:20–0:20"]
