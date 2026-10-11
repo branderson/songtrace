@@ -77,7 +77,7 @@ def _cleanup_uploads(cfg: Config, job_id: str, video_path: Path | None) -> None:
     Covers are left behind: they are small, and a rebuild inherits cover_path, so
     removing one would silently strip #COVER from the rebuilt song. A rebuild can
     also inherit its parent's upload, so the directory is not always uploads/<job_id>.
-    Never raises — the caller has already marked the job done.
+    Never raises, so cleaning up cannot fail a job that otherwise succeeded.
     """
     uploads = (cfg.work_dir / "uploads").resolve()
     dirs = {uploads / job_id}
@@ -193,6 +193,7 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                     if m := STAGE_LINE.match(msg):
                         job.stage = m[1]
 
+            status, error = "done", None
             try:
                 force_from = _prepare_rebuild(job, log)
                 _write_sidecar(job)
@@ -201,18 +202,15 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                     job.output_dir = str(result.output_dir)
                     job.warnings = list(result.warnings)
                 _drop_superseded_output(job, log)
-                with lock:
-                    job.status = "done"
                 # uploads survive a failure so the job stays rerunnable; acquire
                 # has already copied the video into the work dir by now.
                 _cleanup_uploads(cfg, job_id, job.inp.video_path)
             except BaseException as e:
-                with lock:
-                    job.status = "failed"
-                    job.error = str(e)
-            finally:
-                with lock:
-                    job.finished_at = time.time()
+                status, error = "failed", str(e)
+            # last, and all at once: a client that sees the job finished must
+            # find everything finishing it does already done
+            with lock:
+                job.status, job.error, job.finished_at = status, error, time.time()
 
     threading.Thread(target=worker, daemon=True).start()
 
