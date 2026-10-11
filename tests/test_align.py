@@ -213,3 +213,25 @@ def test_lines_whisper_missed_are_aligned_in_the_untranscribed_singing(
     assert all(19.0 <= r["start"] and r["end"] <= 27.0 for r in middle)
     meta = json.loads((tmp_path / "w" / "align_meta.json").read_text())
     assert meta["dropped_lines"] == []
+
+
+def test_stars_bracket_each_line_and_take_no_words(tmp_path, monkeypatch):
+    lyrics = "one two\n...\nthree four"
+    transcript = [{"start": 0.0, "end": 10.0, "text": "one two three four"}]
+    seen = []
+
+    def spy(vocals_path, start, end, tokens, device):
+        seen.append(tokens)
+        # each star claims a long stretch, so a word given a star's span shows
+        spans = [(start + i, start + i + (5.0 if t == "*" else 0.5), 0.9)
+                 for i, t in enumerate(tokens)]
+        return spans
+
+    monkeypatch.setattr(align, "force_align_section", spy)
+    ctx = make_ctx(tmp_path, lyrics, transcript)
+    align.align_stage().run(ctx)
+    rows = json.loads((ctx.work / "alignment.json").read_text())
+    assert seen == [["*", "one", "two", "*", "three", "four", "*"]]
+    timed = [r for r in rows if r["word"] != "..."]
+    assert all(r["end"] - r["start"] == pytest.approx(0.5) for r in timed)
+    check_invariants(rows, lyrics)
