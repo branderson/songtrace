@@ -39,28 +39,74 @@ def lyrics_similarity(segments, ref: RefLyrics) -> float:
     return matcher.ratio()
 
 
-def classify_lyrics_match(segments, ref: RefLyrics, pad: float = 1.0
+def _line_times(segments, matcher, seg_of, line_of) -> dict[int, tuple[float, float]]:
+    """For each reference line that was heard, the start of the first and the
+    end of the last transcript segment its words were heard in. Words in a
+    'replace' block are paired with heard words proportionally."""
+    times: dict[int, tuple[float, float]] = {}
+    for tag, ai1, ai2, bj1, bj2 in matcher.get_opcodes():
+        if tag not in ("equal", "replace"):
+            continue
+        for j in range(bj1, bj2):
+            seg = segments[seg_of[ai1 + (j - bj1) * (ai2 - ai1) // (bj2 - bj1)]]
+            a, b = times.get(line_of[j], (seg.start, seg.end))
+            times[line_of[j]] = (min(a, seg.start), max(b, seg.end))
+    return times
+
+
+def _unheard_runs(segments, ref: RefLyrics, unheard
+                  ) -> tuple[list[list[int]], list[list[tuple[float, float]]]]:
+    """Runs of reference lines with nothing heard for them, each with the
+    untranscribed singing between the heard lines either side of it."""
+    matcher, seg_of, line_of = match_lyrics(segments, ref)
+    times = _line_times(segments, matcher, seg_of, line_of)
+    alignable = set(line_of)
+    runs, spans, run, prev_end = [], [], [], 0.0
+
+    def close(next_start: float) -> None:
+        if run:
+            runs.append(list(run))
+            spans.append([(max(a, prev_end), min(b, next_start)) for a, b in unheard
+                          if a < next_start and b > prev_end])
+            run.clear()
+
+    for li in range(len(ref.lines)):
+        if li in times:
+            close(times[li][0])
+            prev_end = times[li][1]
+        elif li in alignable:
+            run.append(li)
+    close(float("inf"))
+    return runs, spans
+
+
+def recovered_spans(segments, ref: RefLyrics, unheard) -> list[tuple[float, float]]:
+    """The untranscribed singing that stands in for lines Whisper missed, so
+    alignment can place them there."""
+    return _merge_spans([sp for spans in _unheard_runs(segments, ref, unheard)[1]
+                         for sp in spans])
+
+
+def classify_lyrics_match(segments, ref: RefLyrics, pad: float = 1.0, unheard=()
                           ) -> tuple[list[int], list[tuple[float, float]]]:
     """Split reference lines into matched vs. dropped, and flag sung spans no
     reference line explains.
 
     dropped_lines: reference line indices covered only by 'insert' opcodes
-    (present in the lyrics, never heard). missing_spans: the padded, merged
-    bounds of the heard segments behind 'delete' opcodes (heard, but matching
-    no reference word). A segment can also hold matched lines, so a span
-    marks where to look, not words to discard.
-    """
-    matcher, seg_of, line_of = match_lyrics(segments, ref)
-    covered = [False] * len(line_of)
-    for tag, _, _, bj1, bj2 in matcher.get_opcodes():
-        if tag in ("equal", "replace"):
-            for j in range(bj1, bj2):
-                covered[j] = True
-    by_line = {}
-    for j, li in enumerate(line_of):
-        by_line.setdefault(li, []).append(covered[j])
-    dropped_lines = sorted(li for li, cov in by_line.items() if not any(cov))
+    (present in the lyrics, never heard), unless `unheard` (sung spans the
+    transcript has no text for) has singing between the heard lines either
+    side of them: then Whisper missed them, not the singer.
 
+    missing_spans: the padded, merged bounds of the heard segments behind
+    'delete' opcodes (heard, but matching no reference word). A segment can
+    also hold matched lines, so a span marks where to look, not words to
+    discard.
+    """
+    runs, run_spans = _unheard_runs(segments, ref, unheard)
+    dropped_lines = sorted(li for run, sp in zip(runs, run_spans) if not sp
+                           for li in run)
+
+    matcher, seg_of, _ = match_lyrics(segments, ref)
     spans = []
     for tag, ai1, ai2, _, _ in matcher.get_opcodes():
         if tag != "delete":
