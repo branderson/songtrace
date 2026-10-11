@@ -55,6 +55,27 @@ before this change still have it — check with `ffprobe <song>.mp4` for an
 audio stream, and rebuild with **Restart from** set to `package` to clear it
 without re-downloading.
 
+## Editing a song
+
+Above the lyrics, the note sheet shows one line at a time on a pitch-by-beat
+grid, with the pitch songtrace detected drawn over the notes: where a note is
+right the curve runs through it, so a wrong one stands out. Fix it there and
+**SAVE LINE**; the song folder's chart is rewritten on the spot.
+
+Drag a note to move it and its ends to resize it; everything snaps to the
+chart's beat grid and to semitones. Double-click empty space to add a note,
+or a note to change its syllable. With the sheet focused: ←/→ move, ↑/↓
+change pitch (Shift for an octave), Shift+←/→ change length, Tab selects the
+next note, S splits, M merges with the next note, G/F/R make a note golden,
+freestyle or rap, Delete removes, Ctrl+Z undoes, Ctrl+S saves and P plays
+the line.
+
+Edits survive every rebuild, REBUILD ALL FROM… included: they are kept apart
+from what the pipeline generates and laid back over it each time. **REVERT**
+returns a line to the generated notes. Changing a line's lyrics sets its edit
+aside rather than applying it to different words; the sheet lists those so
+you can discard them.
+
 ## Configuration
 
 Config is TOML. Resolution order:

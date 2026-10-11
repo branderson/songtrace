@@ -418,7 +418,32 @@ button { cursor: pointer; }
 }
 .sheet-badge-edited { color: var(--aqua); }
 .sheet-badge-low { color: var(--fail); }
-.sheet-plot { position: relative; cursor: crosshair; }
+.sheet-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 12px; }
+.sheet-tool-group { display: flex; gap: 6px; }
+.sheet-tools .action:disabled { opacity: 0.35; cursor: default; }
+.sheet-tools .sheet-save:not(:disabled) { color: var(--bg); background: var(--purple); border-color: var(--purple); }
+.sheet-status { flex: 1; min-width: 6em; font-size: 0.78rem; color: var(--text-muted); text-align: right; }
+.sheet-status-error { color: var(--fail); }
+.sheet-badge-dirty { color: var(--warn); }
+.sheet-plot { position: relative; cursor: crosshair; touch-action: none; }
+.sheet-plot:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.sheet-note-selected { stroke: var(--text); stroke-width: 2; stroke-dasharray: none; }
+.sheet-syllable-selected { color: var(--aqua); }
+.sheet-text-input {
+  position: absolute;
+  top: -2px;
+  width: 7em;
+  padding: 1px 4px;
+  font-size: 0.8rem;
+  background: var(--panel-raised);
+  border: 1px solid var(--aqua);
+}
+.sheet-stale { margin-bottom: 12px; padding: 8px 10px; font-size: 0.82rem; border: 1px solid var(--warn); }
+.sheet-stale[hidden] { display: none; }
+.sheet-stale-head { color: var(--warn); margin-bottom: 6px; }
+.sheet-stale-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.sheet-stale-text { flex: 1; color: var(--text-muted); }
+.sheet-help { margin-top: 10px; font-size: 0.74rem; line-height: 1.5; color: var(--text-muted); }
 .sheet-svg { display: block; }
 .sheet-row { fill: var(--panel-raised); }
 .sheet-row-black { fill: var(--bg); }
@@ -440,8 +465,8 @@ button { cursor: pointer; }
 .sheet-playhead { position: absolute; top: 0; height: 300px; width: 2px; margin-left: -1px; background: var(--aqua); pointer-events: none; }
 .sheet-playhead[hidden] { display: none; }
 .sheet-syllables, .sheet-words { position: relative; overflow: hidden; }
-.sheet-syllables { height: 20px; margin-top: 6px; }
-.sheet-syllable { position: absolute; top: 0; font-size: 0.8rem; white-space: pre; color: var(--text); }
+.sheet-syllables { height: 22px; margin-top: 6px; overflow: visible; }
+.sheet-syllable { position: absolute; top: 0; font-size: 0.8rem; white-space: pre; color: var(--text); cursor: text; }
 .sheet-words { height: 24px; margin-top: 4px; }
 .sheet-word {
   position: absolute;
@@ -837,6 +862,7 @@ form.addEventListener("input", () => { formDirty = true; });
 // scrolled the panel to. Leaving another song's review under an empty form
 // reads as though the two belong together.
 createSong.addEventListener("click", () => {
+  if (sheet?.isDirty() && !confirm("Discard unsaved changes to this line?")) return;
   if (formDirty && !confirm("Discard your unsaved edits to this form?")) return;
   composing = true;
   selectedId = null;
@@ -1087,6 +1113,8 @@ async function refreshJobs() {
 }
 
 async function selectJob(id) {
+  if (id !== selectedId && sheet?.isDirty() &&
+      !confirm("Discard unsaved changes to this line?")) return;
   // the form already holds this job; reloading it would drop edits in progress
   const reload = id !== rebuildOf;
   if (reload && formDirty && !confirm("Discard your unsaved edits to this form?")) return;
@@ -1262,11 +1290,26 @@ const DRIFT = 0.25;  // seconds before the picture is worth re-seeking
 
 // the note sheet lives in its own module, loaded before any review renders
 let sheet = null;
+let stopAt = null;   // set by playing one line: where playback pauses again
 const sheetReady = import("/static/sheet.js").then((m) => {
   sheet = m.createSheet(document.getElementById("sheet"), {
     seek: (t) => {
       media.currentTime = t;
       if (media.paused) syncPlayback();
+    },
+    playLine: (from, to) => {
+      if (player.hidden) return;
+      media.currentTime = from;
+      stopAt = to;
+      media.play().catch(() => {});
+    },
+    // a saved line changes the notes the lyric list draws
+    onSaved: (data) => {
+      const box = document.getElementById("lyrics-review");
+      const { nodes, entries } = buildLyricsReview(data);
+      box.replaceChildren(...nodes);
+      bindTimeline(player.hidden ? [] : entries);
+      if (!player.hidden) syncPlayback();
     },
   });
 });
@@ -1284,7 +1327,10 @@ for (const event of ["seeked", "ratechange"]) {
     slaveVideo(true);
   });
 }
-media.addEventListener("pause", () => video.pause());
+media.addEventListener("pause", () => {
+  video.pause();
+  stopAt = null;
+});
 let timeline = [];
 let activeEntry = null;
 let syncFrame = null;
@@ -1342,6 +1388,7 @@ function focusActive() {
 }
 
 function pumpPlayback() {
+  if (stopAt !== null && media.currentTime >= stopAt) media.pause();
   syncPlayback();
   slaveVideo(false);
   syncFrame = media.paused ? null : requestAnimationFrame(pumpPlayback);
