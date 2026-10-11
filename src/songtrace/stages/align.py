@@ -12,6 +12,8 @@ from .transcribe import (classify_lyrics_match, load_transcript, lyrics_similari
                          recovered_spans, vocal_sections)
 
 SIMILARITY_THRESHOLD = 0.4
+# MMS_FA's wildcard token: any audio the transcript does not cover
+STAR = "*"
 # Singing is audio within this much of the stem's loud level; separation
 # bleed sits far below it.
 SINGING_BELOW_LOUD_DB = 25.0
@@ -50,7 +52,7 @@ def force_align_section(vocals_path: Path, start: float, end: float,
         waveform[:, lo:hi], sr, bundle.sample_rate)
     # MMS_FA only models a-z and apostrophe; anything else becomes the star token.
     vocab = bundle.get_dict()
-    tokens = ["".join(c if c in vocab else "*" for c in t) for t in tokens]
+    tokens = ["".join(c if c in vocab else STAR for c in t) for t in tokens]
     with torch.inference_mode():
         emission, _ = _get_model(device)(waveform.to(device))
         spans = bundle.get_aligner()(emission[0], bundle.get_tokenizer()(tokens))
@@ -135,9 +137,20 @@ def _enforce_monotonic(rows: list[dict]) -> None:
 def _align_section(vocals: Path, sec: tuple[float, float], words: list[tuple[str, int]],
                    language: str | None, device: str) -> list[dict]:
     tokens = [alignment_token(w, language) for w, _ in words]
-    alignable = [t for t in tokens if t]
-    aligned = iter(force_align_section(vocals, sec[0], sec[1], alignable, device)
-                   if alignable else [])
+    # A star before, between and after lines lets speech, laughter or an
+    # ad-lib there go unexplained rather than claim the next line's letters.
+    seq, prev_line = [], None
+    for (_, line_index), token in zip(words, tokens):
+        if not token:
+            continue
+        if line_index != prev_line:
+            seq.append(STAR)
+            prev_line = line_index
+        seq.append(token)
+    if seq:
+        seq.append(STAR)
+    spans = force_align_section(vocals, sec[0], sec[1], seq, device) if seq else []
+    aligned = iter(span for span, token in zip(spans, seq) if token != STAR)
     rows, blank = [], (None, None, 0.0)
     for (word, line_index), token in zip(words, tokens):
         start, end, score = next(aligned, blank) if token else blank
