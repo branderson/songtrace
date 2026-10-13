@@ -45,3 +45,28 @@ test("a line spans its notes and words", () => {
                    { start: 1.5, end: 3 });
   assert.equal(lineSpan({ notes: [], words: [] }), null);
 });
+
+import { readFileSync } from "node:fs";
+import { SHORTCUTS, comboParts } from "../../src/songtrace/static/sheet.js";
+
+test("shortcut combos split into keys and mouse actions", () => {
+  assert.deepEqual(comboParts("Shift+click / Tab"), [
+    [{ text: "Shift", key: true }, { text: "click", key: false }],
+    [{ text: "Tab", key: true }],
+  ]);
+  assert.deepEqual(comboParts("Page Up"), [[{ text: "Page Up", key: true }]]);
+});
+
+test("every letter key the shortcut list names is one the sheet handles", () => {
+  const source = readFileSync(new URL("../../src/songtrace/static/sheet.js", import.meta.url), "utf8");
+  const handler = source.slice(source.indexOf('plot.addEventListener("keydown"'));
+  const letters = SHORTCUTS.flatMap(([, entries]) => entries)
+    .flatMap(([combo]) => comboParts(combo).flat())
+    .filter(p => p.key && /^[A-Z]$/.test(p.text))
+    .map(p => p.text.toLowerCase());
+  assert.ok(letters.length >= 6);
+  for (const letter of new Set(letters)) {
+    assert.ok(handler.includes(`"${letter}"`) || handler.includes(`${letter}:`),
+              `the list names ${letter.toUpperCase()} but the sheet does not handle it`);
+  }
+});

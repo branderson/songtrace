@@ -12,6 +12,53 @@ const PLOT_HEIGHT = 300;  // px; rows divide this between the pitches shown
 const CONTEXT = 0.75;     // seconds shown either side of the line
 const EDGE = 6;           // px from a note's end that grabs it for resizing
 const KINDS = { "*": "golden", F: "free", R: "rap", G: "golden-rap" };
+const KEYS_OPEN = "songtrace.sheet-keys";
+
+// The sheet's controls, grouped as an editor's reference card lists them.
+// "+" joins keys pressed together, " / " separates alternatives, and a
+// lowercase word is something done with the mouse rather than a key.
+export const SHORTCUTS = [
+  ["Select", [
+    ["click", "select a note"],
+    ["Shift+click", "add to the selection"],
+    ["Tab / Shift+Tab", "next, previous note"],
+    ["Esc", "clear the selection"]]],
+  ["Move", [
+    ["drag", "move in time and pitch"],
+    ["← / →", "a beat earlier, later"],
+    ["↑ / ↓", "a semitone up, down"],
+    ["Shift+↑ / Shift+↓", "an octave up, down"]]],
+  ["Length", [
+    ["drag an end", "resize"],
+    ["Shift+← / Shift+→", "a beat shorter, longer"]]],
+  ["Notes", [
+    ["double-click", "add a note, on empty space"],
+    ["S", "split in two"],
+    ["M", "merge with the next"],
+    ["Delete", "remove"]]],
+  ["Kind", [
+    ["G", "golden"],
+    ["F", "freestyle"],
+    ["R", "rap"],
+    ["G / F / R", "again: back to normal"]]],
+  ["Syllable", [
+    ["double-click", "edit, on a note"],
+    ["Enter", "edit the selected note"]]],
+  ["Line", [
+    ["Ctrl+Z", "undo"],
+    ["Ctrl+Shift+Z / Ctrl+Y", "redo"],
+    ["Ctrl+S", "save"],
+    ["P", "play"],
+    ["Page Up / Page Down", "previous, next line"],
+    ["?", "show or hide these keys"]]],
+];
+
+// "Shift+Tab / Esc" as key caps, with mouse actions left as words
+export function comboParts(combo) {
+  return combo.split(" / ").map(alt => alt.split("+").map(part => ({
+    text: part, key: !/^[a-z]/.test(part),
+  })));
+}
 
 const wrap = (n, d) => ((n % d) + d) % d;
 const mod12 = (p) => wrap(p, 12);
@@ -88,7 +135,9 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   const prev = button("◀ PREV", "previous line (Page Up)", () => page(-1));
   const next = button("NEXT ▶", "next line (Page Down)", () => page(1));
   const nav = div("sheet-nav");
-  nav.append(prev, title, next, badges);
+  const keysButton = button("KEYS ?", "keyboard shortcuts (?)", () => toggleKeys());
+  keysButton.setAttribute("aria-expanded", "false");
+  nav.append(prev, title, next, badges, keysButton);
 
   const tools = {
     undo: button("UNDO", "Ctrl+Z", () => undo()),
@@ -123,12 +172,48 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   plot.append(svg, playhead);
   const syllables = div("sheet-syllables");
   const words = div("sheet-words");
-  const help = div("sheet-help",
-    "Drag a note to move it, its ends to resize · double-click empty space to add a note, " +
-    "a note to edit its syllable · ←→ move · ↑↓ pitch (Shift: octave) · " +
-    "Shift+←→ length · Tab next note · Delete · S split · M merge · G/F/R kind");
+  const help = div("sheet-help", "Press ? for keyboard shortcuts.");
+  const keys = div("sheet-keys");
+  keys.id = "sheet-keys";
+  keysButton.setAttribute("aria-controls", keys.id);
+  for (const [group, entries] of SHORTCUTS) {
+    const section = div("sheet-keys-group");
+    const heading = div("sheet-keys-head", group);
+    const list = document.createElement("dl");
+    for (const [combo, action] of entries) {
+      const dt = document.createElement("dt");
+      comboParts(combo).forEach((alt, i) => {
+        if (i) dt.append(" / ");
+        alt.forEach((part, j) => {
+          if (j) dt.append("+");
+          const node = document.createElement(part.key ? "kbd" : "span");
+          node.textContent = part.text;
+          dt.append(node);
+        });
+      });
+      const dd = document.createElement("dd");
+      dd.textContent = action;
+      list.append(dt, dd);
+    }
+    section.append(heading, list);
+    keys.append(section);
+  }
   const stale = div("sheet-stale");
-  root.replaceChildren(nav, stale, toolbar, plot, syllables, words, help);
+  root.replaceChildren(nav, stale, toolbar, keys, plot, syllables, words, help);
+
+  // stays as the person left it, across lines, songs and visits
+  function showKeys(open) {
+    keys.hidden = !open;
+    help.hidden = open;
+    keysButton.setAttribute("aria-expanded", String(open));
+    try { localStorage.setItem(KEYS_OPEN, open ? "1" : ""); } catch {}
+  }
+  function toggleKeys() {
+    showKeys(keys.hidden);
+  }
+  let keysOpen = false;
+  try { keysOpen = !!localStorage.getItem(KEYS_OPEN); } catch {}
+  showKeys(keysOpen);
 
   let review = null;
   let curve = null;
@@ -589,7 +674,13 @@ export function createSheet(root, { seek, playLine, onSaved }) {
       render();
       return;
     }
-    if (key === "Escape") { handled(); selected = new Set(); render(); return; }
+    if (key === "?") { handled(); toggleKeys(); return; }
+    if (key === "Escape") {
+      handled();
+      if (!keys.hidden) showKeys(false);
+      else { selected = new Set(); render(); }
+      return;
+    }
     if (key.toLowerCase() === "p") { handled(); playCurrent(); return; }
     if (!selected.size) return;
     const arrows = { ArrowLeft: -1, ArrowRight: 1 };
