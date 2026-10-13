@@ -2049,3 +2049,28 @@ def test_reset_on_a_song_built_before_tempo_was_recorded_restores_its_bpm(tmp_pa
     client.put(f"/api/jobs/{job_id}/grid", json={"bpm": 240, "gap_ms": 900})
     body = client.delete(f"/api/jobs/{job_id}/grid").json()
     assert body["grid"]["bpm"] == 300.0 and body["auto_bpm"] == 300.0
+
+
+def test_moving_a_break_recharts_and_is_reported(tmp_path):
+    from songtrace.ultrastar import LineBreak, parse_ultrastar
+    client, cfg = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    assert client.get(f"/api/jobs/{job_id}/review").json()["breaks"] == [
+        {"line": 1, "time": 2.0, "moved": False}]
+    resp = client.put(f"/api/jobs/{job_id}/breaks", json={"1": 2.8})
+    assert resp.status_code == 200
+    assert resp.json()["breaks"] == [{"line": 1, "time": 2.8, "moved": True}]
+    assert not any(line["edited"] for line in resp.json()["lines"])
+    packaged = cfg.output_dir / "A - T" / "A - T.txt"
+    body = parse_ultrastar(packaged.read_text(encoding="utf-8")).body
+    # 300 BPM: 0.05s beats from GAP 1.0s, so 2.8s is beat 36
+    assert [b.beat for b in body if isinstance(b, LineBreak)] == [36]
+    back = client.put(f"/api/jobs/{job_id}/breaks", json={"1": None}).json()
+    assert back["breaks"] == [{"line": 1, "time": 2.0, "moved": False}]
+
+
+def test_a_bad_break_is_refused(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    for body in ({"0": 1.0}, {"9": 1.0}, {"1": -2}, {"1": "x"}):
+        assert client.put(f"/api/jobs/{job_id}/breaks", json=body).status_code == 400

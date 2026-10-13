@@ -70,6 +70,11 @@ next note, S splits, M merges with the next note, G/F/R make a note golden,
 freestyle or rap, Delete removes, Ctrl+Z undoes, Ctrl+S saves and P plays
 the line.
 
+The ↵ markers either side of a line are its line breaks: drag one to move it
+(it snaps to beats and stays between the lines it separates) and double-click
+one to put it back where songtrace places it. Moving a break does not mark
+either line's notes as edited, so they still follow a rebuild.
+
 The **GRID** bar above the notes sets the chart's BPM and GAP. Changes redraw
 the grid as you type and are charted on **APPLY**; ×2 and ÷2 fix a tempo
 detected at double or half speed, and **ALIGN TO NOTE** moves GAP the least

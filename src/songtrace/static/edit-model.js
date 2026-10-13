@@ -148,3 +148,11 @@ export function history(initial) {
     },
   };
 }
+
+// Where a dragged line break lands: on a beat, but kept between the end of
+// the line before it and the start of the line it introduces.
+export function placeBreak(t, lo, hi, grid) {
+  const snapped = snap(t, grid);
+  if (hi < lo) return lo;
+  return Math.min(Math.max(snapped, lo), hi);
+}
