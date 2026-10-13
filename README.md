@@ -70,6 +70,13 @@ next note, S splits, M merges with the next note, G/F/R make a note golden,
 freestyle or rap, Delete removes, Ctrl+Z undoes, Ctrl+S saves and P plays
 the line.
 
+The **GRID** bar above the notes sets the chart's BPM and GAP. Changes redraw
+the grid as you type and are charted on **APPLY**; ×2 and ÷2 fix a tempo
+detected at double or half speed, and **ALIGN TO NOTE** moves GAP the least
+that puts the selected note on a beat. Notes keep their timing in seconds and
+re-snap to the new grid. **RESET** returns to the BPM songtrace chose (your
+BPM override, or the detected tempo) with GAP at the first note.
+
 Edits survive every rebuild, REBUILD ALL FROM… included: they are kept apart
 from what the pipeline generates and laid back over it each time. **REVERT**
 returns a line to the generated notes. Changing a line's lyrics sets its edit

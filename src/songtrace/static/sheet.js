@@ -199,7 +199,47 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     keys.append(section);
   }
   const stale = div("sheet-stale");
-  root.replaceChildren(nav, stale, toolbar, keys, plot, syllables, words, help);
+  const gridBar = div("sheet-grid");
+  const field = (label, step, unit) => {
+    const wrap = document.createElement("label");
+    wrap.className = "sheet-grid-field";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = step;
+    input.min = "0";
+    wrap.append(label, input);
+    if (unit) wrap.append(unit);
+    return { wrap, input };
+  };
+  const bpmField = field("BPM", "0.01");
+  const gapField = field("GAP", "1", "ms");
+  const gridSource = div("sheet-grid-source");
+  const gridTools = {
+    double: button("×2", "double the BPM", () => tryGrid({ bpm: grid().bpm * 2 })),
+    half: button("÷2", "halve the BPM", () => tryGrid({ bpm: grid().bpm / 2 })),
+    earlier: button("−10", "GAP 10ms earlier", () => tryGrid({ gap_ms: grid().gap_ms - 10 })),
+    later: button("+10", "GAP 10ms later", () => tryGrid({ gap_ms: grid().gap_ms + 10 })),
+    align: button("ALIGN TO NOTE", "move GAP the least that puts the selected note on a beat",
+                  () => alignToNote()),
+    cancel: button("CANCEL", "drop the BPM and GAP being tried", () => { gridDraft = null; render(); }),
+    reset: button("RESET", "back to the BPM songtrace chose, with GAP at the first note",
+                  () => resetGrid()),
+    apply: button("APPLY", "chart the song on this BPM and GAP", () => applyGrid(),
+                  "action sheet-save"),
+  };
+  const gridHead = div("sheet-grid-head", "GRID");
+  gridBar.append(gridHead, bpmField.wrap, gridTools.double, gridTools.half,
+                 gapField.wrap, gridTools.earlier, gridTools.later, gridTools.align,
+                 gridSource, gridTools.cancel, gridTools.reset, gridTools.apply);
+  for (const [f, key] of [[bpmField, "bpm"], [gapField, "gap_ms"]]) {
+    f.input.addEventListener("input", () => {
+      const v = Number(f.input.value);
+      if (f.input.value !== "" && Number.isFinite(v) && v >= 0 && (key === "gap_ms" || v > 0)) {
+        tryGrid({ [key]: v }, f.input);
+      }
+    });
+  }
+  root.replaceChildren(nav, stale, gridBar, toolbar, keys, plot, syllables, words, help);
 
   // stays as the person left it, across lines, songs and visits
   function showKeys(open) {
@@ -231,7 +271,11 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   const visible = () => review.lines.filter(l => !l.dropped && lineSpan(l));
   const notes = () => preview ?? hist?.present ?? [];
   const dirty = () => !!hist && hist.present !== baseline;
-  const grid = () => review?.grid;
+  let gridDraft = null;   // BPM and GAP being tried out, not yet applied
+  // the grid being drawn and snapped to: the one being tried out, if any
+  const grid = () => gridDraft ?? review?.grid;
+  // notes snap to the grid, so they wait while a new one is being tried
+  const canEdit = () => !!review?.grid && !gridDraft && !saving;
 
   function say(text, error = false) {
     status.textContent = text;
@@ -344,28 +388,32 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     open(index);
   }
 
-  async function send(method, body) {
+  // a change saved to the server, which answers with the refreshed review
+  async function send(path, method, body, busy, done) {
     saving = true;
     render();
-    say(method === "PUT" ? "saving…" : "reverting…");
+    say(busy);
     try {
-      const resp = await fetch(`/api/jobs/${jobId}/lines/${index}`, {
+      const resp = await fetch(`/api/jobs/${jobId}/${path}`, {
         method, headers: { "Content-Type": "application/json" },
         body: body ? JSON.stringify(body) : undefined,
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         say(err.detail || `error ${resp.status}`, true);
-        return;
+        return false;
       }
       const data = await resp.json();
       const at = index;
       review = data;
+      gridDraft = null;
       open(at);
-      say(method === "PUT" ? "saved" : "reverted to the generated notes");
+      say(done);
       onSaved(data);
+      return true;
     } catch {
       say("could not reach songtrace", true);
+      return false;
     } finally {
       saving = false;
       render();
@@ -374,16 +422,69 @@ export function createSheet(root, { seek, playLine, onSaved }) {
 
   function save() {
     if (!dirty() || saving) return;
-    send("PUT", { notes: edit.toSaved(notes()) });
+    send(`lines/${index}`, "PUT", { notes: edit.toSaved(notes()) }, "saving…", "saved");
   }
 
   function revert() {
     if (!review.lines[index].edited || saving) return;
     if (!confirm("Go back to the generated notes for this line? Your edit is lost.")) return;
-    send("DELETE");
+    send(`lines/${index}`, "DELETE", null, "reverting…", "reverted to the generated notes");
   }
 
-  function render() {
+  // redraws on the trial grid straight away; nothing is saved until APPLY
+  function tryGrid(change, typing = null) {
+    const next = { ...grid(), ...change };
+    next.gap_ms = Math.max(0, next.gap_ms);
+    const same = review.grid && next.bpm === review.grid.bpm && next.gap_ms === review.grid.gap_ms;
+    gridDraft = same ? null : next;
+    render(typing);
+  }
+
+  function alignToNote() {
+    const note = notes().find(n => selected.has(n.id));
+    if (!note) return;
+    const g = grid();
+    const spbMs = 60000 / (4 * g.bpm);
+    const atMs = note.start * 1000;
+    const offset = (atMs - g.gap_ms) - Math.round((atMs - g.gap_ms) / spbMs) * spbMs;
+    tryGrid({ gap_ms: Math.round((g.gap_ms + offset) * 100) / 100 });
+  }
+
+  async function applyGrid() {
+    if (!gridDraft || saving) return;
+    if (dirty()) { say("save or discard this line's changes first", true); return; }
+    await send("grid", "PUT", gridDraft, "charting on the new grid…", "grid applied");
+  }
+
+  async function resetGrid() {
+    if (!review.grid_edited || saving) return;
+    if (dirty()) { say("save or discard this line's changes first", true); return; }
+    await send("grid", "DELETE", null, "resetting the grid…",
+               "grid reset to the BPM songtrace chose");
+  }
+
+  function paintGrid(typing) {
+    const g = grid();
+    gridBar.hidden = !review.grid;
+    if (!g) return;
+    const round = (v, d) => String(Math.round(v * 10 ** d) / 10 ** d);
+    // the field being typed in keeps what was typed, half-finished or not
+    if (typing !== bpmField.input) bpmField.input.value = round(g.bpm, 2);
+    if (typing !== gapField.input) gapField.input.value = round(g.gap_ms, 2);
+    gridSource.textContent = gridDraft ? "not applied"
+      : review.grid_edited ? "set in the editor"
+      : review.auto_bpm ? "songtrace's choice" : "";
+    gridSource.classList.toggle("sheet-grid-pending", !!gridDraft);
+    gridTools.align.disabled = saving || selected.size !== 1;
+    gridTools.cancel.disabled = !gridDraft || saving;
+    gridTools.apply.disabled = !gridDraft || saving;
+    gridTools.reset.disabled = !review.grid_edited || !!gridDraft || saving;
+    for (const b of [gridTools.double, gridTools.half, gridTools.earlier, gridTools.later]) {
+      b.disabled = saving;
+    }
+  }
+
+  function render(typing = null) {
     if (!review || index === null) return;
     const line = review.lines[index];
     const { t0, t1, lo, hi } = layout;
@@ -492,6 +593,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     badges.replaceChildren(...tags.map(([text, cls]) => div(`sheet-badge ${cls}`, text)));
 
     paintTools();
+    paintGrid(typing);
   }
 
   function paintSelection() {
@@ -501,11 +603,12 @@ export function createSheet(root, { seek, playLine, onSaved }) {
                                                      : "sheet-syllable-selected", on);
     }
     paintTools();
+    paintGrid();
   }
 
   function paintTools() {
     const line = review.lines[index];
-    const editable = !!grid() && !saving;
+    const editable = canEdit();
     tools.undo.disabled = !editable || !hist.canUndo;
     tools.redo.disabled = !editable || !hist.canRedo;
     tools.split.disabled = tools.merge.disabled = !editable || one() === null;
@@ -542,7 +645,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     if (!view) return;
     if (!drag) {
       const { note, mode } = hit(e);
-      plot.style.cursor = !note || !grid() ? "crosshair"
+      plot.style.cursor = !note || !canEdit() ? "crosshair"
                         : mode === "move" ? "grab" : "ew-resize";
       return;
     }
@@ -570,7 +673,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     plot.focus();
     const { px, py, note, mode } = hit(e);
     if (px < GUTTER) return;
-    if (note && grid()) {
+    if (note && canEdit()) {
       if (e.shiftKey) {
         selected = new Set(selected);
         if (selected.has(note.id)) selected.delete(note.id); else selected.add(note.id);
@@ -603,7 +706,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   plot.addEventListener("pointercancel", (e) => endDrag(e, true));
 
   plot.addEventListener("dblclick", (e) => {
-    if (!view || !grid()) return;
+    if (!view || !canEdit()) return;
     const { px, py, note } = hit(e);
     if (px < GUTTER) return;
     if (note) { editText(note.id); return; }
@@ -662,7 +765,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     if (ctrl && key.toLowerCase() === "y") { handled(); redo(); return; }
     if (key === "PageUp") { handled(); page(-1); return; }
     if (key === "PageDown") { handled(); page(1); return; }
-    if (ctrl || e.altKey || !grid()) return;
+    if (ctrl || e.altKey || !canEdit()) return;
     const ns = notes();
     if (key === "Tab") {
       handled();
@@ -719,6 +822,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
       if (!same) {
         jobId = id;
         curve = null;
+        gridDraft = null;
         fetch(`/api/jobs/${id}/pitch`)
           .then(r => (r.ok ? r.json() : null))
           .then(c => { if (jobId === id) { curve = c; render(); } })
@@ -733,7 +837,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
       jobId = null;
       curve = null;
       index = null;
-      view = layout = hist = baseline = preview = null;
+      view = layout = hist = baseline = preview = gridDraft = null;
       root.hidden = true;
     },
     // playback following the song: never at the cost of unsaved edits

@@ -7,6 +7,7 @@ rebuild with a different BPM re-snaps it rather than breaking it.
 """
 import difflib
 import json
+import math
 import time
 from pathlib import Path
 
@@ -18,7 +19,8 @@ KINDS = {":", "*", "F", "R", "G"}
 
 
 def _empty(lyrics: list[list[str]]) -> dict:
-    return {"lyrics": lyrics, "lines": {}, "stale": []}
+    # grid: the BPM and GAP set in the editor, or None for the pipeline's own
+    return {"lyrics": lyrics, "lines": {}, "stale": [], "grid": None}
 
 
 def load(work: Path, lyrics: list[list[str]]) -> dict:
@@ -41,7 +43,7 @@ def load(work: Path, lyrics: list[list[str]]) -> dict:
 
 def save(work: Path, data: dict) -> None:
     path = work / EDITS_FILE
-    if not data["lines"] and not data["stale"]:
+    if not data["lines"] and not data["stale"] and not data.get("grid"):
         path.unlink(missing_ok=True)
         return
     tmp = path.with_suffix(".tmp")
@@ -64,7 +66,7 @@ def _remap(data: dict, lyrics: list[list[str]]) -> dict:
             stale.append(edit)
         else:
             lines[str(to)] = {**edit, "line_index": to}
-    return {"lyrics": lyrics, "lines": lines, "stale": stale}
+    return {"lyrics": lyrics, "lines": lines, "stale": stale, "grid": data.get("grid")}
 
 
 def validate_notes(notes: list[dict]) -> list[dict]:
@@ -95,6 +97,25 @@ def set_line(data: dict, index: int, notes: list[dict]) -> None:
 
 def clear_line(data: dict, index: int) -> bool:
     return data["lines"].pop(str(index), None) is not None
+
+
+def set_grid(data: dict, bpm, gap_ms) -> None:
+    """Set the chart's BPM (UltraStar's, a quarter of a beat per beat) and GAP."""
+    try:
+        bpm, gap_ms = float(bpm), float(gap_ms)
+    except (TypeError, ValueError):
+        raise ValueError("bpm and gap_ms must be numbers")
+    if not (math.isfinite(bpm) and 0 < bpm <= 2000):
+        raise ValueError(f"bpm must be above 0 and at most 2000, not {bpm}")
+    if not (math.isfinite(gap_ms) and gap_ms >= 0):
+        raise ValueError(f"gap_ms must be 0 or more, not {gap_ms}")
+    data["grid"] = {"bpm": bpm, "gap_ms": gap_ms}
+
+
+def clear_grid(data: dict) -> bool:
+    had = bool(data.get("grid"))
+    data["grid"] = None
+    return had
 
 
 def merge(notes: list[dict], breaks: list[float], data: dict
@@ -168,6 +189,6 @@ def finalize(work: Path, lyrics: list[list[str]]) -> dict:
                         " the lyrics; set aside in the editor")
     final = {"notes": notes, "breaks": breaks, "warnings": warnings,
              "edited_lines": sorted(int(k) for k in data["lines"]),
-             "stale": data["stale"]}
+             "stale": data["stale"], "grid": data.get("grid")}
     (work / FINAL_FILE).write_text(json.dumps(final))
     return final

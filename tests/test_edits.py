@@ -122,3 +122,33 @@ def test_finalize_reports_stale_edits(tmp_path):
     final = edits.finalize(tmp_path, [LYRICS[0], ["other"], LYRICS[2]])
     assert final["warnings"] == ["1 edited line no longer matches the lyrics; "
                                  "set aside in the editor"]
+
+
+def test_a_grid_set_in_the_editor_is_checked():
+    data = edits._empty(LYRICS)
+    edits.set_grid(data, "240.5", 1500)
+    assert data["grid"] == {"bpm": 240.5, "gap_ms": 1500.0}
+    for bpm, gap in ((0, 0), (-1, 0), (float("nan"), 0), (3000, 0), (300, -1), ("x", 0)):
+        with pytest.raises(ValueError):
+            edits.set_grid(data, bpm, gap)
+
+
+def test_a_grid_alone_keeps_the_edits_file_and_survives_new_lyrics(tmp_path):
+    data = edits._empty(LYRICS)
+    edits.set_grid(data, 300, 1000)
+    edits.save(tmp_path, data)
+    assert (tmp_path / edits.EDITS_FILE).exists()
+    loaded = edits.load(tmp_path, [["zero"]] + LYRICS)
+    assert loaded["grid"] == {"bpm": 300.0, "gap_ms": 1000.0}
+    assert edits.clear_grid(loaded) and not edits.clear_grid(loaded)
+    edits.save(tmp_path, loaded)
+    assert not (tmp_path / edits.EDITS_FILE).exists()
+
+
+def test_finalize_reports_the_grid(tmp_path):
+    _write_generated(tmp_path, GENERATED, [])
+    assert edits.finalize(tmp_path, LYRICS)["grid"] is None
+    data = edits._empty(LYRICS)
+    edits.set_grid(data, 300, 1000)
+    edits.save(tmp_path, data)
+    assert edits.finalize(tmp_path, LYRICS)["grid"] == {"bpm": 300.0, "gap_ms": 1000.0}

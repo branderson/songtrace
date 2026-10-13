@@ -2003,3 +2003,49 @@ def test_pitch_curve_is_404_without_a_pitch_track(tmp_path):
     client, _ = make_client(tmp_path, chart_runner)
     job_id = make_charted_job(client)
     assert client.get(f"/api/jobs/{job_id}/pitch").status_code == 404
+
+
+def _chart_header(path, key):
+    from songtrace.ultrastar import get_header, parse_ultrastar
+    return get_header(parse_ultrastar(path.read_text(encoding="utf-8")), key)
+
+
+def test_setting_the_grid_recharts_and_survives_line_saves(tmp_path):
+    client, cfg = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    resp = client.put(f"/api/jobs/{job_id}/grid", json={"bpm": 240, "gap_ms": 900})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["grid"] == {"bpm": 240.0, "gap_ms": 900.0} and body["grid_edited"]
+    packaged = cfg.output_dir / "A - T" / "A - T.txt"
+    assert (_chart_header(packaged, "BPM"), _chart_header(packaged, "GAP")) == ("240", "900")
+    client.put(f"/api/jobs/{job_id}/lines/1", json=EDIT)
+    assert (_chart_header(packaged, "BPM"), _chart_header(packaged, "GAP")) == ("240", "900")
+
+
+def test_resetting_the_grid_returns_to_the_pipelines_tempo(tmp_path):
+    client, cfg = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    (cfg.work_dir / "A - T" / "tempo.json").write_text(json.dumps({"bpm": 300.0}))
+    client.put(f"/api/jobs/{job_id}/grid", json={"bpm": 240, "gap_ms": 900})
+    resp = client.delete(f"/api/jobs/{job_id}/grid")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["grid"] == {"bpm": 300.0, "gap_ms": 1000.0}   # GAP back at the first note
+    assert not body["grid_edited"] and body["auto_bpm"] == 300.0
+    assert client.delete(f"/api/jobs/{job_id}/grid").status_code == 404
+
+
+def test_a_bad_grid_is_refused(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    for body in ({"bpm": 0, "gap_ms": 0}, {"bpm": 300, "gap_ms": -5}, {"bpm": "x"}, {}):
+        assert client.put(f"/api/jobs/{job_id}/grid", json=body).status_code == 400
+
+
+def test_reset_on_a_song_built_before_tempo_was_recorded_restores_its_bpm(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)   # charted at 300 BPM, no tempo.json
+    client.put(f"/api/jobs/{job_id}/grid", json={"bpm": 240, "gap_ms": 900})
+    body = client.delete(f"/api/jobs/{job_id}/grid").json()
+    assert body["grid"]["bpm"] == 300.0 and body["auto_bpm"] == 300.0

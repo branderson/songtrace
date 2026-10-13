@@ -418,6 +418,39 @@ button { cursor: pointer; }
 }
 .sheet-badge-edited { color: var(--aqua); }
 .sheet-badge-low { color: var(--fail); }
+.sheet-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+}
+.sheet-grid[hidden] { display: none; }
+.sheet-grid-head {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  color: var(--aqua);
+}
+.sheet-grid-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+.sheet-grid-field input { width: 6.5em; padding: 3px 2px; font: 0.85rem var(--font-mono); }
+.sheet-grid .action:disabled { opacity: 0.35; cursor: default; }
+.sheet-grid .sheet-save:not(:disabled) { color: var(--bg); background: var(--purple); border-color: var(--purple); }
+.sheet-grid-source { flex: 1; min-width: 7em; font-size: 0.76rem; text-align: right; color: var(--text-muted); }
+.sheet-grid-pending { color: var(--warn); }
 .sheet-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 12px; }
 .sheet-tool-group { display: flex; gap: 6px; }
 .sheet-tools .action:disabled { opacity: 0.35; cursor: default; }

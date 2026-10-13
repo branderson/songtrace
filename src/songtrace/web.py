@@ -504,7 +504,8 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         media = {kind: _resolve_media(job, header) is not None
                  for kind, header in MEDIA_HEADERS.items()}
         return {"lines": lines, "missing_spans": missing_spans, "media": media,
-                "stale": stale, "grid": _chart_grid(work)}
+                "stale": stale, "grid": _chart_grid(work),
+                "grid_edited": bool(notes_data.get("grid")), "auto_bpm": _auto_bpm(work)}
 
     @app.get("/api/jobs/{job_id}/pitch")
     def get_pitch(job_id: str):
@@ -562,15 +563,49 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 raise HTTPException(400, str(e))
             edits.save(work, data)
             final = edits.finalize(work, lyrics)
+            # the editor's grid, else the pipeline's own tempo with GAP at
+            # the first note, as the grid stage would chart it
+            chosen = final["grid"] or {"bpm": _auto_bpm(work), "gap_ms": None}
             charts = [work / "song.txt"]
             if job.output_dir:
                 charts.append(Path(job.output_dir) / f"{song_slug(job.inp)}.txt")
             for txt in charts:
                 if txt.exists():
-                    grid.rechart(txt, final["notes"], final["breaks"])
+                    grid.rechart(txt, final["notes"], final["breaks"],
+                                 chosen["bpm"], chosen["gap_ms"])
         with lock:
             job.warnings = list(final["warnings"])
         return get_review(job_id)
+
+    def _auto_bpm(work: Path) -> float | None:
+        """The tempo the pipeline chose: recorded by grid, or for a song built
+        before that was, the one its chart already has."""
+        try:
+            return float(json.loads((work / grid.TEMPO_FILE).read_text())["bpm"])
+        except (OSError, ValueError, KeyError):
+            g = _chart_grid(work)
+            return g["bpm"] if g else None
+
+    @app.put("/api/jobs/{job_id}/grid")
+    def save_grid(job_id: str, body: dict = Body(...)):
+        """Set the chart's BPM and GAP, kept through rebuilds like any edit."""
+        job = _editable(job_id)
+        work = cfg.work_dir / song_slug(job.inp)
+        tempo = work / grid.TEMPO_FILE
+        # a song built before grid recorded its tempo: the chart's, taken now
+        # while it is still the pipeline's, is what RESET must return to
+        if not tempo.exists() and (bpm := _auto_bpm(work)) is not None:
+            tempo.write_text(json.dumps({"bpm": bpm}))
+        return _edit(job_id, lambda data, lyrics: edits.set_grid(
+            data, body.get("bpm"), body.get("gap_ms")))
+
+    @app.delete("/api/jobs/{job_id}/grid")
+    def reset_grid(job_id: str):
+        """Go back to the BPM the pipeline chose and GAP at the first note."""
+        def change(data, lyrics):
+            if not edits.clear_grid(data):
+                raise HTTPException(404, "the grid was not set in the editor")
+        return _edit(job_id, change)
 
     def _line(lyrics, index: int) -> int:
         if not 0 <= index < len(lyrics):
