@@ -1977,3 +1977,40 @@ def test_a_stale_edit_can_be_discarded(tmp_path):
     assert resp.status_code == 200 and resp.json()["stale"] == []
     assert not (work / edits.EDITS_FILE).exists()
     assert client.delete(f"/api/jobs/{second}/stale/0").status_code == 404
+
+
+def _listed(client, job_id):
+    return next(j for j in client.get("/api/jobs").json() if j["id"] == job_id)
+
+
+def test_the_queue_reports_a_songs_edited_lines(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    assert _listed(client, job_id)["edited_lines"] == 0
+    client.put(f"/api/jobs/{job_id}/lines/1", json=EDIT)
+    assert _listed(client, job_id)["edited_lines"] == 1
+    assert _listed(client, job_id)["stale_edits"] == 0
+
+
+def test_edit_counts_follow_the_song_to_its_latest_run(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    first = make_charted_job(client)
+    client.put(f"/api/jobs/{first}/lines/1", json=EDIT)
+    rerun = client.post(f"/api/jobs/{first}/rerun").json()["id"]
+    wait_status(client, rerun, "done")
+    assert _listed(client, rerun)["edited_lines"] == 1
+    assert _listed(client, first)["edited_lines"] == 0
+    candidates = client.get("/api/rebuild-all").json()
+    assert [(c["id"], c["edited_lines"]) for c in candidates] == [(rerun, 1)]
+
+
+def test_the_queue_reports_edits_set_aside(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    first = make_charted_job(client)
+    client.put(f"/api/jobs/{first}/lines/1", json=EDIT)
+    second = make_charted_job(client, lyrics="one\nthree more")
+    # the next save looks at the edits against the new lyrics, as a rebuild does
+    client.put(f"/api/jobs/{second}/lines/0", json={"notes": [
+        {"start": 1.0, "duration": 0.5, "pitch": 0, "text": "one"}]})
+    listed = _listed(client, second)
+    assert (listed["edited_lines"], listed["stale_edits"]) == (1, 1)
