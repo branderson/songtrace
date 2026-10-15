@@ -503,8 +503,17 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                  for e in notes_data.get("stale", [])]
         media = {kind: _resolve_media(job, header) is not None
                  for kind, header in MEDIA_HEADERS.items()}
+        # each break with the line it comes before, the key a move is saved by
+        moved = set(notes_data.get("moved_breaks", []))
+        starts = sorted((n["start"], n["line_index"]) for n in notes_data["notes"]
+                        if "line_index" in n)
+        breaks = []
+        for t in notes_data.get("breaks", []):
+            after = next((li for start, li in starts if start >= t), None)
+            if after is not None:
+                breaks.append({"line": after, "time": t, "moved": after in moved})
         return {"lines": lines, "missing_spans": missing_spans, "media": media,
-                "stale": stale, "grid": _chart_grid(work),
+                "stale": stale, "breaks": breaks, "grid": _chart_grid(work),
                 "grid_edited": bool(notes_data.get("grid")), "auto_bpm": _auto_bpm(work)}
 
     @app.get("/api/jobs/{job_id}/pitch")
@@ -585,6 +594,12 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         except (OSError, ValueError, KeyError):
             g = _chart_grid(work)
             return g["bpm"] if g else None
+
+    @app.put("/api/jobs/{job_id}/breaks")
+    def save_breaks(job_id: str, body: dict = Body(...)):
+        """Move line breaks: {line: seconds}, keyed by the line each comes
+        before; null puts one back where the notes alone would place it."""
+        return _edit(job_id, lambda data, lyrics: edits.set_breaks(data, body))
 
     @app.put("/api/jobs/{job_id}/grid")
     def save_grid(job_id: str, body: dict = Body(...)):

@@ -120,3 +120,10 @@ test("history undoes and redoes, and a new change drops the redo", () => {
   assert.equal(h.canRedo, false);
   assert.equal(h.present, "d");
 });
+
+test("a dragged break snaps to a beat but stays between its lines", () => {
+  assert.ok(near(m.placeBreak(1.52, 1.4, 1.8, GRID), 1.5));
+  assert.equal(m.placeBreak(1.0, 1.42, 1.8, GRID), 1.42);   // not into the line before
+  assert.equal(m.placeBreak(2.5, 1.4, 1.78, GRID), 1.78);   // nor into the line after
+  assert.equal(m.placeBreak(1.6, 1.9, 1.8, GRID), 1.9);     // lines overlap: at the end of the first
+});

@@ -41,6 +41,9 @@ export const SHORTCUTS = [
     ["F", "freestyle"],
     ["R", "rap"],
     ["G / F / R", "again: back to normal"]]],
+  ["Line break", [
+    ["drag a ↵ marker", "move it, between the lines it separates"],
+    ["double-click a ↵", "back to where songtrace puts it"]]],
   ["Syllable", [
     ["double-click", "edit, on a note"],
     ["Enter", "edit the selected note"]]],
@@ -264,12 +267,16 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   let hist = null;        // the current line's notes, with undo
   let baseline = null;    // what the line holds on the server
   let preview = null;     // notes mid-drag, not yet in the history
+  let breakPreview = null;  // a break mid-drag: { which, t }
   let selected = new Set();
   let drag = null;
   let saving = false;
 
   const visible = () => review.lines.filter(l => !l.dropped && lineSpan(l));
-  const notes = () => preview ?? hist?.present ?? [];
+  // the line being edited: its notes and the breaks either side of it, as
+  // one state so undo covers both. A break is its time, undefined where there
+  // is none to move, or null when it is to go back to automatic.
+  const notes = () => preview ?? hist?.present.notes ?? [];
   const dirty = () => !!hist && hist.present !== baseline;
   let gridDraft = null;   // BPM and GAP being tried out, not yet applied
   // the grid being drawn and snapped to: the one being tried out, if any
@@ -291,6 +298,12 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     const span = ts.length ? { start: Math.min(...ts), end: Math.max(...ts) } : lineSpan(line);
     const range = pitchRange(notes().map(n => n.pitch));
     const want = { t0: span.start - CONTEXT, t1: span.end + CONTEXT, ...range };
+    // the breaks either side are part of the line's page, so they stay on it
+    for (const slot of breakSlots()) {
+      const t = breakTime(slot);
+      want.t0 = Math.min(want.t0, t - 0.3);
+      want.t1 = Math.max(want.t1, t + 0.3);
+    }
     layout = reset || !layout ? want : {
       t0: Math.min(layout.t0, want.t0), t1: Math.max(layout.t1, want.t1),
       lo: Math.min(layout.lo, want.lo), hi: Math.max(layout.hi, want.hi),
@@ -326,8 +339,16 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   function open(i) {
     index = i;
     const line = review.lines[i];
-    baseline = edit.withIds(line.notes.map(n => ({ ...n, kind: n.kind ?? ":" })));
+    const lines = visible();
+    const at = lines.findIndex(l => l.index === i);
+    const breakBefore = (l) => review.breaks?.find(b => b.line === l?.index)?.time;
+    baseline = {
+      notes: edit.withIds(line.notes.map(n => ({ ...n, kind: n.kind ?? ":" }))),
+      before: at > 0 ? breakBefore(line) : undefined,
+      after: breakBefore(lines[at + 1]),
+    };
     hist = edit.history(baseline);
+    breakPreview = null;
     preview = null;
     selected = new Set();
     say("");
@@ -351,10 +372,45 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   }
 
   function change(next, keep = selected) {
-    hist.push(next);
+    hist.push({ ...hist.present, notes: next });
     selected = new Set([...keep].filter(id => next.some(n => n.id === id)));
     fit(false);
     render();
+  }
+
+  function changeBreak(which, t) {
+    if (hist.present[which] === t) return;
+    hist.push({ ...hist.present, [which]: t });
+    render();
+  }
+
+  // the breaks either side of the line, each with the gap it may move in:
+  // from the end of the line before it to the start of the line after
+  function breakSlots() {
+    const ns = notes();
+    if (!hist || !ns.length) return [];
+    const lines = visible();
+    const at = lines.findIndex(l => l.index === index);
+    const prev = lines[at - 1];
+    const next = lines[at + 1];
+    const slots = [];
+    if (prev?.notes.length && hist.present.before !== undefined) {
+      slots.push({ which: "before", line: index,
+                   lo: Math.max(...prev.notes.map(n => n.end)), hi: ns[0].start });
+    }
+    if (next?.notes.length && hist.present.after !== undefined) {
+      slots.push({ which: "after", line: next.index,
+                   lo: Math.max(...ns.map(n => n.end)), hi: Math.min(...next.notes.map(n => n.start)) });
+    }
+    return slots;
+  }
+
+  // where a break is drawn; one going back to automatic is shown mid-gap,
+  // roughly where it will land
+  function breakTime(slot) {
+    const v = breakPreview?.which === slot.which ? breakPreview.t : hist.present[slot.which];
+    const t = v === null ? (slot.lo + slot.hi) / 2 : v;
+    return Math.min(Math.max(t, slot.lo), Math.max(slot.hi, slot.lo));
   }
 
   const undo = () => { if (hist?.canUndo) { hist.undo(); fit(false); render(); } };
@@ -420,9 +476,20 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     }
   }
 
-  function save() {
+  // only what changed: a moved break alone must not mark the line edited
+  async function save() {
     if (!dirty() || saving) return;
-    send(`lines/${index}`, "PUT", { notes: edit.toSaved(notes()) }, "saving…", "saved");
+    const state = hist.present;
+    const lines = visible();
+    const next = lines[lines.findIndex(l => l.index === index) + 1];
+    const moved = {};
+    if (state.before !== baseline.before) moved[index] = state.before;
+    if (state.after !== baseline.after && next) moved[next.index] = state.after;
+    if (state.notes !== baseline.notes &&
+        !await send(`lines/${index}`, "PUT", { notes: edit.toSaved(state.notes) }, "saving…", "saved")) {
+      return;
+    }
+    if (Object.keys(moved).length) await send("breaks", "PUT", moved, "saving…", "saved");
   }
 
   function revert() {
@@ -548,6 +615,18 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     }
     for (const n of notes()) drawNote(n, true);
 
+    const marks = el("g", { class: "sheet-breaks" }, svg);
+    for (const slot of breakSlots()) {
+      const t = breakTime(slot);
+      const value = hist.present[slot.which];
+      const byHand = value !== null &&
+        (value !== baseline[slot.which] || review.breaks?.find(b => b.line === slot.line)?.moved);
+      const cls = `sheet-break${byHand ? " sheet-break-moved" : ""}`;
+      el("line", { x1: x(t), x2: x(t), y1: 0, y2: PLOT_HEIGHT, class: cls }, marks);
+      el("text", { x: x(t) + 3, y: 11, class: `${cls} sheet-break-label` }, marks)
+        .textContent = "↵";
+    }
+
     syllables.replaceChildren(...notes().map(n => {
       const s = div("sheet-syllable" + (selected.has(n.id) ? " sheet-syllable-selected" : ""),
                     n.text.trim() || "~");
@@ -628,6 +707,10 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     const py = e.clientY - box.top;
     // by geometry, not the event's target: a render replaces the elements
     // under the pointer, and the topmost note drawn wins
+    if (canEdit()) {
+      const brk = breakSlots().find(s => Math.abs(px - view.x(breakTime(s))) <= 5);
+      if (brk) return { px, py, note: null, brk, mode: "break" };
+    }
     const pitch = view.pitch(py);
     const note = [...notes()].reverse().find(n => n.pitch === pitch &&
       px >= view.x(n.start) - 1 && px <= view.x(n.end) + 1) ?? null;
@@ -638,14 +721,15 @@ export function createSheet(root, { seek, playLine, onSaved }) {
       mode = right - left > 3 * EDGE && px >= right - EDGE ? "end"
            : right - left > 3 * EDGE && px <= left + EDGE ? "start" : "move";
     }
-    return { px, py, note, mode };
+    return { px, py, note, brk: null, mode };
   }
 
   plot.addEventListener("pointermove", (e) => {
     if (!view) return;
     if (!drag) {
-      const { note, mode } = hit(e);
-      plot.style.cursor = !note || !canEdit() ? "crosshair"
+      const { note, brk, mode } = hit(e);
+      plot.style.cursor = brk ? "col-resize"
+                        : !note || !canEdit() ? "crosshair"
                         : mode === "move" ? "grab" : "ew-resize";
       return;
     }
@@ -653,6 +737,12 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     const px = e.clientX - box.left;
     const py = e.clientY - box.top;
     if (Math.abs(px - drag.px) + Math.abs(py - drag.py) > 3) drag.moved = true;
+    if (drag.moved && drag.brk) {
+      const { which, lo, hi } = drag.brk;
+      breakPreview = { which, t: edit.placeBreak(view.time(px), lo, hi, grid()) };
+      render();
+      return;
+    }
     if (!drag.moved || !drag.note) return;
     if (drag.mode === "move") {
       const spbPx = view.x(60 / (4 * grid().bpm)) - view.x(0);
@@ -671,8 +761,9 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     // sheet, and with it the keyboard
     e.preventDefault();
     plot.focus();
-    const { px, py, note, mode } = hit(e);
+    const { px, py, note, brk, mode } = hit(e);
     if (px < GUTTER) return;
+    if (brk) plot.setPointerCapture(e.pointerId);
     if (note && canEdit()) {
       if (e.shiftKey) {
         selected = new Set(selected);
@@ -684,18 +775,22 @@ export function createSheet(root, { seek, playLine, onSaved }) {
       plot.style.cursor = mode === "move" ? "grabbing" : "ew-resize";
       paintSelection();
     }
-    drag = { px, py, note, mode, base: notes(), moved: false };
+    drag = { px, py, note, brk, mode, base: notes(), moved: false };
   });
 
   const endDrag = (e, cancelled) => {
     if (!drag) return;
     const d = drag;
     drag = null;
-    if (preview) {
+    if (breakPreview) {
+      const { which, t } = breakPreview;
+      breakPreview = null;
+      if (cancelled) render(); else changeBreak(which, t);
+    } else if (preview) {
       const next = preview;
       preview = null;
       if (cancelled) render(); else change(next);
-    } else if (!d.moved && !d.note && !cancelled) {
+    } else if (!d.moved && !d.note && !d.brk && !cancelled) {
       selected = new Set();
       render();
       seek(view.time(d.px));
@@ -707,8 +802,9 @@ export function createSheet(root, { seek, playLine, onSaved }) {
 
   plot.addEventListener("dblclick", (e) => {
     if (!view || !canEdit()) return;
-    const { px, py, note } = hit(e);
+    const { px, py, note, brk } = hit(e);
     if (px < GUTTER) return;
+    if (brk) { changeBreak(brk.which, null); return; }   // back to automatic
     if (note) { editText(note.id); return; }
     const out = edit.insert(notes(), view.time(px), view.pitch(py), grid());
     change(out.notes, new Set([out.id]));

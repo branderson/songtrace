@@ -19,8 +19,9 @@ KINDS = {":", "*", "F", "R", "G"}
 
 
 def _empty(lyrics: list[list[str]]) -> dict:
-    # grid: the BPM and GAP set in the editor, or None for the pipeline's own
-    return {"lyrics": lyrics, "lines": {}, "stale": [], "grid": None}
+    # grid: the BPM and GAP set in the editor, or None for the pipeline's own;
+    # breaks: line breaks moved by hand, keyed by the line each comes before
+    return {"lyrics": lyrics, "lines": {}, "stale": [], "grid": None, "breaks": {}}
 
 
 def load(work: Path, lyrics: list[list[str]]) -> dict:
@@ -43,7 +44,7 @@ def load(work: Path, lyrics: list[list[str]]) -> dict:
 
 def save(work: Path, data: dict) -> None:
     path = work / EDITS_FILE
-    if not data["lines"] and not data["stale"] and not data.get("grid"):
+    if not (data["lines"] or data["stale"] or data.get("grid") or data.get("breaks")):
         path.unlink(missing_ok=True)
         return
     tmp = path.with_suffix(".tmp")
@@ -66,7 +67,12 @@ def _remap(data: dict, lyrics: list[list[str]]) -> dict:
             stale.append(edit)
         else:
             lines[str(to)] = {**edit, "line_index": to}
-    return {"lyrics": lyrics, "lines": lines, "stale": stale, "grid": data.get("grid")}
+    # a moved break goes with the line it comes before; with that line gone,
+    # there is nothing left for it to separate
+    breaks = {str(moved[int(k)]): t for k, t in data.get("breaks", {}).items()
+              if int(k) in moved}
+    return {"lyrics": lyrics, "lines": lines, "stale": stale, "grid": data.get("grid"),
+            "breaks": breaks}
 
 
 def validate_notes(notes: list[dict]) -> list[dict]:
@@ -99,6 +105,30 @@ def clear_line(data: dict, index: int) -> bool:
     return data["lines"].pop(str(index), None) is not None
 
 
+def set_breaks(data: dict, changes: dict) -> None:
+    """Move line breaks, each keyed by the line it comes before, to a time in
+    seconds; None puts one back to where the notes alone would place it."""
+    breaks = dict(data.get("breaks", {}))
+    for key, t in changes.items():
+        try:
+            line = int(key)
+        except (TypeError, ValueError):
+            raise ValueError(f"a break is keyed by the line it comes before, not {key!r}")
+        if not 0 < line < len(data["lyrics"]):
+            raise ValueError(f"no line {line} for a break to come before")
+        if t is None:
+            breaks.pop(str(line), None)
+            continue
+        try:
+            t = float(t)
+        except (TypeError, ValueError):
+            raise ValueError(f"a break needs a time in seconds, not {t!r}")
+        if not (math.isfinite(t) and t >= 0):
+            raise ValueError(f"a break needs a time of 0 or more, not {t}")
+        breaks[str(line)] = t
+    data["breaks"] = breaks
+
+
 def set_grid(data: dict, bpm, gap_ms) -> None:
     """Set the chart's BPM (UltraStar's, a quarter of a beat per beat) and GAP."""
     try:
@@ -125,10 +155,12 @@ def merge(notes: list[dict], breaks: list[float], data: dict
     An edited line replaces the generated notes of that line, and the user's
     timing wins: generated notes of earlier lines are cut back to end where it
     starts, and those of later lines to start where it ends. Line breaks next
-    to an edited line move to the middle of the gap it leaves.
+    to an edited line move to the middle of the gap it leaves; a break moved
+    by hand stays where it was put, kept between the lines it separates.
     """
     edited = {int(k): e["notes"] for k, e in data["lines"].items()}
-    if not edited:
+    moved = {int(k): t for k, t in data.get("breaks", {}).items()}
+    if not edited and not moved:
         return notes, breaks
     spans = {li: (ns[0]["start"], ns[-1]["start"] + ns[-1]["duration"])
              for li, ns in edited.items() if ns}
@@ -143,7 +175,9 @@ def merge(notes: list[dict], breaks: list[float], data: dict
                 end = min(end, a)
             elif li > eli:
                 start = max(start, b)
-        if end - start >= MIN_NOTE_SEC:
+        if (start, end) == (n["start"], n["start"] + n["duration"]):
+            kept.append(n)
+        elif end - start >= MIN_NOTE_SEC:
             kept.append({**n, "start": start, "duration": end - start})
     for li, ns in edited.items():
         kept += [{**n, "line_index": li, "low_confidence": False} for n in ns]
@@ -160,13 +194,17 @@ def merge(notes: list[dict], breaks: list[float], data: dict
     order = sorted(first, key=lambda li: first[li]["start"])
     out_breaks = []
     for prev, nxt in zip(order, order[1:]):
+        end = last[prev]["start"] + last[prev]["duration"]
+        if nxt in moved:
+            # where it was put, but never inside either line's notes
+            out_breaks.append(min(max(moved[nxt], end), max(first[nxt]["start"], end)))
+            continue
         if prev not in edited and nxt not in edited:
             # the generated break between these two lines, untouched
             gen = [t for t in breaks if line_after(t) == nxt]
             if gen:
                 out_breaks.append(gen[0])
                 continue
-        end = last[prev]["start"] + last[prev]["duration"]
         out_breaks.append((end + first[nxt]["start"]) / 2)
     return kept, out_breaks
 
@@ -189,6 +227,7 @@ def finalize(work: Path, lyrics: list[list[str]]) -> dict:
                         " the lyrics; set aside in the editor")
     final = {"notes": notes, "breaks": breaks, "warnings": warnings,
              "edited_lines": sorted(int(k) for k in data["lines"]),
-             "stale": data["stale"], "grid": data.get("grid")}
+             "stale": data["stale"], "grid": data.get("grid"),
+             "moved_breaks": sorted(int(k) for k in data.get("breaks", {}))}
     (work / FINAL_FILE).write_text(json.dumps(final))
     return final

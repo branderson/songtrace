@@ -152,3 +152,38 @@ def test_finalize_reports_the_grid(tmp_path):
     edits.set_grid(data, 300, 1000)
     edits.save(tmp_path, data)
     assert edits.finalize(tmp_path, LYRICS)["grid"] == {"bpm": 300.0, "gap_ms": 1000.0}
+
+
+def test_moved_breaks_are_checked():
+    data = edits._empty(LYRICS)
+    edits.set_breaks(data, {"1": 3.5, 2: "6.25"})
+    assert data["breaks"] == {"1": 3.5, "2": 6.25}
+    edits.set_breaks(data, {1: None})
+    assert data["breaks"] == {"2": 6.25}
+    for bad in ({0: 1.0}, {3: 1.0}, {"x": 1.0}, {1: -1}, {1: "soon"}, {1: float("inf")}):
+        with pytest.raises(ValueError):
+            edits.set_breaks(data, bad)
+
+
+def test_a_moved_break_stays_put_between_its_lines():
+    data = edits._empty(LYRICS)
+    edits.set_breaks(data, {1: 2.5})
+    notes, breaks = edits.merge(GENERATED, BREAKS, data)
+    assert notes == GENERATED                 # moving a break locks no notes
+    assert breaks == [2.5, 6.0]
+
+
+def test_a_moved_break_never_lands_inside_a_line():
+    data = edits._empty(LYRICS)
+    edits.set_breaks(data, {1: 1.0, 2: 9.0})  # into line 0's notes, past line 2's start
+    _, breaks = edits.merge(GENERATED, BREAKS, data)
+    assert breaks == [pytest.approx(1.9), 8.0]
+
+
+def test_moved_breaks_follow_their_lines_and_keep_the_file(tmp_path):
+    data = edits._empty(LYRICS)
+    edits.set_breaks(data, {1: 3.5, 2: 6.5})
+    edits.save(tmp_path, data)
+    assert (tmp_path / edits.EDITS_FILE).exists()
+    moved = edits.load(tmp_path, [["zero"], LYRICS[0], LYRICS[1], ["other"]])
+    assert moved["breaks"] == {"2": 3.5}      # line 2's words changed: its break goes
