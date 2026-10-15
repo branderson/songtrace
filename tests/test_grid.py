@@ -222,7 +222,7 @@ def test_grid_stage_honours_zero_bpm_override(tmp_path, monkeypatch):
     monkeypatch.setattr(grid_stage_mod.grid, "detect_bpm", boom)
     captured = {}
 
-    def fake_to_ultrastar(notes, breaks, file_bpm, headers):
+    def fake_to_ultrastar(notes, breaks, file_bpm, headers, gap_ms=None):
         captured["bpm"] = file_bpm
         return to_ultrastar(notes, breaks, 240.0, headers)
 
@@ -299,3 +299,44 @@ def test_rechart_replaces_the_notes_and_keeps_headers_and_tempo(tmp_path):
     assert [k for k, _ in song.headers] == ["TITLE", "VIDEO", "BPM", "GAP"]
     assert get_header(song, "BPM") == "300" and get_header(song, "GAP") == "2000"
     assert [(n.kind, n.pitch, n.text) for n in song.body] == [("F", 7, "new")]
+
+
+def test_an_explicit_gap_sets_the_grid():
+    # 300 BPM: 0.05s beats; notes at 1.02s and 1.27s against GAP 1.0s
+    song = to_ultrastar([note(1.02, 0.1), note(1.27, 0.1)], [], 300.0, [], gap_ms=1000)
+    assert get_header(song, "GAP") == "1000"
+    assert [n.beat for n in song.body] == [0, 5]
+
+
+def test_a_gap_after_the_first_note_moves_back_by_whole_beats():
+    # GAP 1.13s is after the first note at 1.02s: back 3 beats to 0.98s, so
+    # the grid lines stay where they were set and the note is on beat 1
+    song = to_ultrastar([note(1.02, 0.1)], [], 300.0, [], gap_ms=1130)
+    assert get_header(song, "GAP") == "980"
+    assert song.body[0].beat == 1
+
+
+def test_the_grid_stage_uses_the_editors_grid_and_records_its_own(tmp_path, monkeypatch):
+    from songtrace import edits
+    work = tmp_path / "w"
+    write_work(work)
+    monkeypatch.setattr(grid_stage_mod.grid, "detect_bpm", lambda p: 120.0)
+    ctx = make_ctx(work)
+    data = edits.load(work, [["x"]])
+    edits.set_grid(data, 300.0, 900)
+    edits.save(work, data)
+    grid_stage_mod.grid_stage().run(ctx)
+    song = parse_ultrastar((work / "song.txt").read_text(encoding="utf-8"))
+    assert (get_header(song, "BPM"), get_header(song, "GAP")) == ("300", "900")
+    assert json.loads((work / "tempo.json").read_text()) == {"bpm": 240.0}
+
+
+def test_rechart_can_set_a_new_bpm_and_gap(tmp_path):
+    from songtrace.grid import rechart
+    from songtrace.ultrastar import serialize_ultrastar
+    txt = tmp_path / "song.txt"
+    txt.write_text(serialize_ultrastar(to_ultrastar([note(1.0, 0.5)], [], 240.0, [])),
+                   encoding="utf-8")
+    rechart(txt, [note(1.02, 0.1)], [], 300.0, 1000)
+    song = parse_ultrastar(txt.read_text(encoding="utf-8"))
+    assert (get_header(song, "BPM"), get_header(song, "GAP")) == ("300", "1000")
