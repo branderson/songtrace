@@ -623,6 +623,11 @@ button { cursor: pointer; }
 }
 .lineage:hover { border-bottom-color: var(--aqua); }
 .job-mark { grid-area: 1 / 2; justify-self: end; font-size: 0.8rem; color: var(--text-muted); }
+.job-edits { grid-area: 2 / 2; justify-self: end; display: flex; gap: 6px; font-size: 0.72rem; }
+.job-edits-kept { color: var(--aqua); }
+.job-edits-stale { color: var(--warn); }
+.rebuild-all-kept { color: var(--aqua); }
+.rebuild-all-aside { color: var(--warn); }
 
 #detail {
   margin: 13px 0 0;
@@ -744,7 +749,8 @@ button { cursor: pointer; }
   <form id="rebuild-all-form" method="dialog">
     <h2 id="rebuild-all-heading">REBUILD ALL SONGS</h2>
     <p>Reruns the songs ticked below from the chosen stage onwards with the
-      inputs they have now, for when a songtrace update improves that stage.</p>
+      inputs they have now, for when a songtrace update improves that stage.
+      Lines edited by hand are kept.</p>
     <label class="field">
       <span>Restart from</span>
       <select name="force_from" required></select>
@@ -991,6 +997,18 @@ function rebuildAllRow(song) {
     undefined, { dateStyle: "medium", timeStyle: "short" });
   meta.textContent = busy ? "in progress, skipped"
     : `${song.status === "failed" ? "failed" : song.rebuilt_from ? "rebuilt" : "built"} ${when || ""}`.trim();
+  if (song.edited_lines) {
+    const kept = document.createElement("span");
+    kept.className = "rebuild-all-kept";
+    kept.textContent = ` · ${song.edited_lines} edited line${song.edited_lines === 1 ? "" : "s"} kept`;
+    meta.append(kept);
+  }
+  if (song.stale_edits) {
+    const aside = document.createElement("span");
+    aside.className = "rebuild-all-aside";
+    aside.textContent = ` · ${song.stale_edits} set aside`;
+    meta.append(aside);
+  }
   row.append(box, name, meta);
   return row;
 }
@@ -1066,7 +1084,10 @@ function jobCard(job) {
   markLabel.className = "sr-only";
   mark.append(markGlyph, markLabel);
 
-  card.append(title, artist, stateLine, time, mark);
+  const edits = document.createElement("span");
+  edits.className = "job-edits";
+
+  card.append(title, artist, stateLine, time, mark, edits);
   card.addEventListener("click", () => selectJob(job.id));
   paintCard(card, job);
   return card;
@@ -1074,7 +1095,7 @@ function jobCard(job) {
 
 function paintCard(card, job) {
   const state = STATE[job.status] ?? { glyph: "·", cls: "st-queued" };
-  const [title, artist, stateLine, time, mark] = card.children;
+  const [title, artist, stateLine, time, mark, edits] = card.children;
   card.className = `job ${state.cls}`;
   if (job.id === selectedId) card.setAttribute("aria-current", "true");
   else card.removeAttribute("aria-current");
@@ -1085,6 +1106,33 @@ function paintCard(card, job) {
   time.textContent = elapsed(job);
   mark.children[0].textContent = job.rebuilt_from ? "↻" : "";
   mark.children[1].textContent = job.rebuilt_from ? " rebuilt" : "";
+  paintEdits(edits, job);
+}
+
+// hand edits a rebuild keeps, and any set aside because the lyrics changed
+function paintEdits(node, job) {
+  const parts = [];
+  if (job.edited_lines) parts.push(["job-edits-kept", `✎ ${job.edited_lines}`]);
+  if (job.stale_edits) parts.push(["job-edits-stale", `⚠ ${job.stale_edits}`]);
+  const label = [
+    job.edited_lines ? `${job.edited_lines} edited line${job.edited_lines === 1 ? "" : "s"}` : "",
+    job.stale_edits ? `${job.stale_edits} set aside` : "",
+  ].filter(Boolean).join(", ");
+  if (node.title === label) return;
+  node.title = label;
+  node.replaceChildren(...parts.map(([cls, text]) => {
+    const span = document.createElement("span");
+    span.className = cls;
+    span.setAttribute("aria-hidden", "true");
+    span.textContent = text;
+    return span;
+  }));
+  if (label) {
+    const sr = document.createElement("span");
+    sr.className = "sr-only";
+    sr.textContent = label;
+    node.append(sr);
+  }
 }
 
 // patched in place rather than replaced wholesale: detaching a card would blur
