@@ -9,6 +9,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import numpy as np
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
@@ -18,6 +19,7 @@ from . import edits, grid
 from . import rebuild as rebuild_policy
 from .config import Config
 from .lyrics import normalize_lyrics
+from .notes import CONF_MASK
 from .pipeline import (STAGE_ORDER, PipelineError, SongInput, read_warnings,
                        run_pipeline, song_slug)
 from .ultrastar import get_header, parse_ultrastar
@@ -516,8 +518,38 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                  for e in notes_data.get("stale", [])]
         media = {kind: _resolve_media(job, header) is not None
                  for kind, header in MEDIA_HEADERS.items()}
+        # each break with the line it comes before, the key a move is saved by
+        moved = set(notes_data.get("moved_breaks", []))
+        starts = sorted((n["start"], n["line_index"]) for n in notes_data["notes"]
+                        if "line_index" in n)
+        breaks = []
+        for t in notes_data.get("breaks", []):
+            after = next((li for start, li in starts if start >= t), None)
+            if after is not None:
+                breaks.append({"line": after, "time": t, "moved": after in moved})
         return {"lines": lines, "missing_spans": missing_spans, "media": media,
-                "stale": stale, "grid": _chart_grid(work)}
+                "stale": stale, "breaks": breaks, "grid": _chart_grid(work),
+                "grid_edited": bool(notes_data.get("grid")), "auto_bpm": _auto_bpm(work)}
+
+    @app.get("/api/jobs/{job_id}/pitch")
+    def get_pitch(job_id: str):
+        """The detected vocal pitch, to draw behind the notes: UltraStar
+        semitones (0 = C4) every `step` seconds, null where nothing is sung."""
+        job = _finished_job(job_id)
+        path = cfg.work_dir / song_slug(job.inp) / "pitch.npz"
+        if not path.exists():
+            raise HTTPException(404)
+        data = np.load(path)
+        times, f0, conf = data["times"], data["f0"], data["conf"]
+        # every other 10ms frame is still finer than a note can be drawn
+        stride = 2
+        f0, conf = f0[::stride], conf[::stride]
+        voiced = (conf >= CONF_MASK) & (f0 > 0)
+        semis = 9 + 12 * np.log2(np.where(voiced, f0, 440.0) / 440.0)
+        hop = float(times[1] - times[0]) if len(times) > 1 else 0.01
+        return {"start": float(times[0]) if len(times) else 0.0, "step": hop * stride,
+                "pitch": [round(float(v), 2) if ok else None
+                          for v, ok in zip(semis, voiced)]}
 
     def _chart_grid(work: Path) -> dict | None:
         """The beat grid the chart was built on, for snapping edits to it."""
@@ -555,15 +587,55 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 raise HTTPException(400, str(e))
             edits.save(work, data)
             final = edits.finalize(work, lyrics)
+            # the editor's grid, else the pipeline's own tempo with GAP at
+            # the first note, as the grid stage would chart it
+            chosen = final["grid"] or {"bpm": _auto_bpm(work), "gap_ms": None}
             charts = [work / "song.txt"]
             if job.output_dir:
                 charts.append(Path(job.output_dir) / f"{song_slug(job.inp)}.txt")
             for txt in charts:
                 if txt.exists():
-                    grid.rechart(txt, final["notes"], final["breaks"])
+                    grid.rechart(txt, final["notes"], final["breaks"],
+                                 chosen["bpm"], chosen["gap_ms"])
         with lock:
             job.warnings = list(final["warnings"])
         return get_review(job_id)
+
+    def _auto_bpm(work: Path) -> float | None:
+        """The tempo the pipeline chose: recorded by grid, or for a song built
+        before that was, the one its chart already has."""
+        try:
+            return float(json.loads((work / grid.TEMPO_FILE).read_text())["bpm"])
+        except (OSError, ValueError, KeyError):
+            g = _chart_grid(work)
+            return g["bpm"] if g else None
+
+    @app.put("/api/jobs/{job_id}/breaks")
+    def save_breaks(job_id: str, body: dict = Body(...)):
+        """Move line breaks: {line: seconds}, keyed by the line each comes
+        before; null puts one back where the notes alone would place it."""
+        return _edit(job_id, lambda data, lyrics: edits.set_breaks(data, body))
+
+    @app.put("/api/jobs/{job_id}/grid")
+    def save_grid(job_id: str, body: dict = Body(...)):
+        """Set the chart's BPM and GAP, kept through rebuilds like any edit."""
+        job = _editable(job_id)
+        work = cfg.work_dir / song_slug(job.inp)
+        tempo = work / grid.TEMPO_FILE
+        # a song built before grid recorded its tempo: the chart's, taken now
+        # while it is still the pipeline's, is what RESET must return to
+        if not tempo.exists() and (bpm := _auto_bpm(work)) is not None:
+            tempo.write_text(json.dumps({"bpm": bpm}))
+        return _edit(job_id, lambda data, lyrics: edits.set_grid(
+            data, body.get("bpm"), body.get("gap_ms")))
+
+    @app.delete("/api/jobs/{job_id}/grid")
+    def reset_grid(job_id: str):
+        """Go back to the BPM the pipeline chose and GAP at the first note."""
+        def change(data, lyrics):
+            if not edits.clear_grid(data):
+                raise HTTPException(404, "the grid was not set in the editor")
+        return _edit(job_id, change)
 
     def _line(lyrics, index: int) -> int:
         if not 0 <= index < len(lyrics):

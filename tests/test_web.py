@@ -1979,6 +1979,103 @@ def test_a_stale_edit_can_be_discarded(tmp_path):
     assert client.delete(f"/api/jobs/{second}/stale/0").status_code == 404
 
 
+def test_pitch_curve_is_in_note_semitones_with_gaps_where_unvoiced(tmp_path):
+    import numpy as np
+
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        result = chart_runner(inp, cfg)
+        times = np.arange(0, 0.1, 0.01)
+        f0 = np.array([440.0] * 4 + [261.63] * 4 + [0.0] * 2)   # A4, C4, nothing
+        conf = np.array([0.9] * 4 + [0.9, 0.9, 0.1, 0.1] + [0.9] * 2)
+        np.savez(cfg.work_dir / song_slug(inp) / "pitch.npz", times=times, f0=f0, conf=conf)
+        return result
+
+    client, _ = make_client(tmp_path, runner)
+    job_id = make_charted_job(client)
+    body = client.get(f"/api/jobs/{job_id}/pitch").json()
+    assert body["start"] == 0.0 and body["step"] == pytest.approx(0.02)
+    assert body["pitch"][:2] == [9.0, 9.0]                  # A4 is 9 above C4
+    assert body["pitch"][2] == pytest.approx(0.0, abs=0.01)  # C4
+    assert body["pitch"][3:] == [None, None]                # unsure, then silent
+
+
+def test_pitch_curve_is_404_without_a_pitch_track(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    assert client.get(f"/api/jobs/{job_id}/pitch").status_code == 404
+
+
+def _chart_header(path, key):
+    from songtrace.ultrastar import get_header, parse_ultrastar
+    return get_header(parse_ultrastar(path.read_text(encoding="utf-8")), key)
+
+
+def test_setting_the_grid_recharts_and_survives_line_saves(tmp_path):
+    client, cfg = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    resp = client.put(f"/api/jobs/{job_id}/grid", json={"bpm": 240, "gap_ms": 900})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["grid"] == {"bpm": 240.0, "gap_ms": 900.0} and body["grid_edited"]
+    packaged = cfg.output_dir / "A - T" / "A - T.txt"
+    assert (_chart_header(packaged, "BPM"), _chart_header(packaged, "GAP")) == ("240", "900")
+    client.put(f"/api/jobs/{job_id}/lines/1", json=EDIT)
+    assert (_chart_header(packaged, "BPM"), _chart_header(packaged, "GAP")) == ("240", "900")
+
+
+def test_resetting_the_grid_returns_to_the_pipelines_tempo(tmp_path):
+    client, cfg = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    (cfg.work_dir / "A - T" / "tempo.json").write_text(json.dumps({"bpm": 300.0}))
+    client.put(f"/api/jobs/{job_id}/grid", json={"bpm": 240, "gap_ms": 900})
+    resp = client.delete(f"/api/jobs/{job_id}/grid")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["grid"] == {"bpm": 300.0, "gap_ms": 1000.0}   # GAP back at the first note
+    assert not body["grid_edited"] and body["auto_bpm"] == 300.0
+    assert client.delete(f"/api/jobs/{job_id}/grid").status_code == 404
+
+
+def test_a_bad_grid_is_refused(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    for body in ({"bpm": 0, "gap_ms": 0}, {"bpm": 300, "gap_ms": -5}, {"bpm": "x"}, {}):
+        assert client.put(f"/api/jobs/{job_id}/grid", json=body).status_code == 400
+
+
+def test_reset_on_a_song_built_before_tempo_was_recorded_restores_its_bpm(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)   # charted at 300 BPM, no tempo.json
+    client.put(f"/api/jobs/{job_id}/grid", json={"bpm": 240, "gap_ms": 900})
+    body = client.delete(f"/api/jobs/{job_id}/grid").json()
+    assert body["grid"]["bpm"] == 300.0 and body["auto_bpm"] == 300.0
+
+
+def test_moving_a_break_recharts_and_is_reported(tmp_path):
+    from songtrace.ultrastar import LineBreak, parse_ultrastar
+    client, cfg = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    assert client.get(f"/api/jobs/{job_id}/review").json()["breaks"] == [
+        {"line": 1, "time": 2.0, "moved": False}]
+    resp = client.put(f"/api/jobs/{job_id}/breaks", json={"1": 2.8})
+    assert resp.status_code == 200
+    assert resp.json()["breaks"] == [{"line": 1, "time": 2.8, "moved": True}]
+    assert not any(line["edited"] for line in resp.json()["lines"])
+    packaged = cfg.output_dir / "A - T" / "A - T.txt"
+    body = parse_ultrastar(packaged.read_text(encoding="utf-8")).body
+    # 300 BPM: 0.05s beats from GAP 1.0s, so 2.8s is beat 36
+    assert [b.beat for b in body if isinstance(b, LineBreak)] == [36]
+    back = client.put(f"/api/jobs/{job_id}/breaks", json={"1": None}).json()
+    assert back["breaks"] == [{"line": 1, "time": 2.0, "moved": False}]
+
+
+def test_a_bad_break_is_refused(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    for body in ({"0": 1.0}, {"9": 1.0}, {"1": -2}, {"1": "x"}):
+        assert client.put(f"/api/jobs/{job_id}/breaks", json=body).status_code == 400
+
+
 def _listed(client, job_id):
     return next(j for j in client.get("/api/jobs").json() if j["id"] == job_id)
 
