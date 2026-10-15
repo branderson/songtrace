@@ -340,11 +340,21 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
             position = {job_id: n for n, job_id in enumerate(order)}
             return sorted(latest.values(), key=lambda j: position[j.id], reverse=True)
 
+    def _edit_counts(job: Job) -> dict:
+        """How much of the song was edited by hand, from its edits file."""
+        path = cfg.work_dir / song_slug(job.inp) / edits.EDITS_FILE
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return {"edited_lines": 0, "stale_edits": 0}
+        return {"edited_lines": len(data.get("lines", {})),
+                "stale_edits": len(data.get("stale", []))}
+
     @app.get("/api/rebuild-all")
     def rebuild_all_candidates():
         return [{"id": j.id, "title": j.title, "artist": j.artist,
                  "status": j.status, "rebuilt_from": j.rebuilt_from,
-                 "finished_at": j.finished_at}
+                 "finished_at": j.finished_at, **_edit_counts(j)}
                 for j in _current_songs()]
 
     @app.post("/api/rebuild-all", status_code=201)
@@ -380,11 +390,16 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
     @app.get("/api/jobs")
     def list_jobs():
+        # edits belong to the song as it is now, so only the job standing for
+        # it carries them; the runs it replaced would claim them twice
+        counts = {j.id: _edit_counts(j) for j in _current_songs()}
+        none = {"edited_lines": 0, "stale_edits": 0}
         with lock:
             return [{"id": j.id, "title": j.title, "artist": j.artist,
                       "status": j.status, "stage": j.stage,
                       "created_at": j.created_at, "started_at": j.started_at,
-                      "finished_at": j.finished_at, "rebuilt_from": j.rebuilt_from}
+                      "finished_at": j.finished_at, "rebuilt_from": j.rebuilt_from,
+                      **counts.get(j.id, none)}
                      for j in (jobs[i] for i in reversed(order))]
 
     @app.get("/api/jobs/{job_id}")
