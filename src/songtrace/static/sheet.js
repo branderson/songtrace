@@ -10,6 +10,7 @@ const BLACK = new Set([1, 3, 6, 8, 10]);
 const GUTTER = 46;        // px of note names left of the grid
 const PLOT_HEIGHT = 300;  // px; rows divide this between the pitches shown
 const CONTEXT = 0.75;     // seconds shown either side of the line
+const BREAK_REACH = 3;    // seconds past the line the page grows to show a break
 const EDGE = 6;           // px from a note's end that grabs it for resizing
 const KINDS = { "*": "golden", F: "free", R: "rap", G: "golden-rap" };
 const KEYS_OPEN = "songtrace.sheet-keys";
@@ -298,11 +299,13 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     const span = ts.length ? { start: Math.min(...ts), end: Math.max(...ts) } : lineSpan(line);
     const range = pitchRange(notes().map(n => n.pitch));
     const want = { t0: span.start - CONTEXT, t1: span.end + CONTEXT, ...range };
-    // the breaks either side are part of the line's page, so they stay on it
+    // the breaks either side are part of the line's page, so it grows to
+    // show them, but not across a long instrumental: one further away is
+    // pinned to the edge instead (see shownBreakTime)
     for (const slot of breakSlots()) {
       const t = breakTime(slot);
-      want.t0 = Math.min(want.t0, t - 0.3);
-      want.t1 = Math.max(want.t1, t + 0.3);
+      want.t0 = Math.min(want.t0, Math.max(t - 0.3, span.start - BREAK_REACH));
+      want.t1 = Math.max(want.t1, Math.min(t + 0.3, span.end + BREAK_REACH));
     }
     layout = reset || !layout ? want : {
       t0: Math.min(layout.t0, want.t0), t1: Math.max(layout.t1, want.t1),
@@ -411,6 +414,15 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     const v = breakPreview?.which === slot.which ? breakPreview.t : hist.present[slot.which];
     const t = v === null ? (slot.lo + slot.hi) / 2 : v;
     return Math.min(Math.max(t, slot.lo), Math.max(slot.hi, slot.lo));
+  }
+
+  // where a break is drawn and grabbed: on the page, pinned to its edge
+  // when it lies beyond it
+  function shownBreakTime(slot) {
+    const edge = (layout.t1 - layout.t0) * 0.003;   // a few pixels in
+    const t = breakTime(slot);
+    const shown = Math.min(Math.max(t, layout.t0 + edge), layout.t1 - edge);
+    return { t: shown, pinned: shown !== t ? (t < shown ? "left" : "right") : null };
   }
 
   const undo = () => { if (hist?.canUndo) { hist.undo(); fit(false); render(); } };
@@ -617,14 +629,16 @@ export function createSheet(root, { seek, playLine, onSaved }) {
 
     const marks = el("g", { class: "sheet-breaks" }, svg);
     for (const slot of breakSlots()) {
-      const t = breakTime(slot);
+      const { t, pinned } = shownBreakTime(slot);
       const value = hist.present[slot.which];
       const byHand = value !== null &&
         (value !== baseline[slot.which] || review.breaks?.find(b => b.line === slot.line)?.moved);
       const cls = `sheet-break${byHand ? " sheet-break-moved" : ""}`;
       el("line", { x1: x(t), x2: x(t), y1: 0, y2: PLOT_HEIGHT, class: cls }, marks);
-      el("text", { x: x(t) + 3, y: 11, class: `${cls} sheet-break-label` }, marks)
-        .textContent = "↵";
+      const label = el("text", { x: pinned === "right" ? x(t) - 3 : x(t) + 3, y: 11,
+                                 "text-anchor": pinned === "right" ? "end" : "start",
+                                 class: `${cls} sheet-break-label` }, marks);
+      label.textContent = pinned === "right" ? "↵ →" : pinned === "left" ? "← ↵" : "↵";
     }
 
     syllables.replaceChildren(...notes().map(n => {
@@ -708,7 +722,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     // by geometry, not the event's target: a render replaces the elements
     // under the pointer, and the topmost note drawn wins
     if (canEdit()) {
-      const brk = breakSlots().find(s => Math.abs(px - view.x(breakTime(s))) <= 5);
+      const brk = breakSlots().find(s => Math.abs(px - view.x(shownBreakTime(s).t)) <= 5);
       if (brk) return { px, py, note: null, brk, mode: "break" };
     }
     const pitch = view.pitch(py);
