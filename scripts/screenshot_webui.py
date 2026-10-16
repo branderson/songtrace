@@ -15,11 +15,14 @@ import time
 from pathlib import Path
 
 import httpx
+import numpy as np
 import uvicorn
 from playwright.sync_api import sync_playwright
 
 from songtrace.config import Config
+from songtrace.grid import to_ultrastar
 from songtrace.pipeline import PipelineError, PipelineResult, song_slug
+from songtrace.ultrastar import serialize_ultrastar
 from songtrace.web import create_app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -128,13 +131,29 @@ def make_runner():
             if "review" in extra:
                 work = cfg.work_dir / song_slug(inp)
                 work.mkdir(parents=True, exist_ok=True)
+                # one note per word in the seeded lines, so each sings its word
                 notes = [
-                    {**n, "duration": n["end"] - n["start"], "text": "~",
-                     "line_index": line["index"]}
-                    for line in extra["review"]["lines"] for n in line["notes"]
+                    {**n, "duration": n["end"] - n["start"],
+                     "text": (" " if k else "") + w["text"], "line_index": line["index"]}
+                    for line in extra["review"]["lines"]
+                    for k, (n, w) in enumerate(zip(line["notes"], line["words"]))
                 ]
+                sung = [line for line in extra["review"]["lines"] if line["notes"]]
+                breaks = [(a["notes"][-1]["end"] + b["notes"][0]["start"]) / 2
+                          for a, b in zip(sung, sung[1:])]
                 (work / "notes_sec.json").write_text(json.dumps({
-                    "notes": notes, "breaks": [], "warnings": extra["warnings"]}))
+                    "notes": notes, "breaks": breaks, "warnings": extra["warnings"]}))
+                # a chart for the beat grid, and a sung pitch with a little
+                # vibrato for the curve over the notes
+                (work / "song.txt").write_text(serialize_ultrastar(to_ultrastar(
+                    notes, breaks, 240.0, [("TITLE", inp.title)])), encoding="utf-8")
+                times = np.arange(0, 60, 0.01)
+                f0, conf = np.zeros_like(times), np.zeros_like(times)
+                for n in notes:
+                    m = (times >= n["start"] + 0.02) & (times < n["start"] + n["duration"] - 0.02)
+                    semis = n["pitch"] + 0.2 * np.sin(2 * np.pi * 5.5 * times[m])
+                    f0[m], conf[m] = 440 * 2 ** ((semis - 9) / 12), 0.9
+                np.savez(work / "pitch.npz", times=times, f0=f0, conf=conf)
                 (work / "align_meta.json").write_text(json.dumps({
                     "dropped_lines": [line["index"] for line in extra["review"]["lines"]
                                       if line["dropped"]],
@@ -230,13 +249,13 @@ def capture(base_url: str, with_player: bool) -> None:
             # current word colouring rather than an untouched transport
             page.evaluate("document.getElementById('player-media').currentTime = 11.6")
             page.wait_for_timeout(400)
-            # scrolled to the review: the player pins to the top of #main and
-            # the tracked lines sit under it, which is the panel in use
-            page.evaluate("""() => {
-              const main = document.getElementById('main');
-              main.scrollTo(0, document.getElementById('review').offsetTop - 12);
-            }""")
-            page.wait_for_timeout(400)
+        page.wait_for_selector(".sheet-curve polyline")
+        # scrolled to the review, the panel in use, with the note sheet whole
+        page.evaluate("""() => {
+          const main = document.getElementById('main');
+          main.scrollTo(0, document.getElementById('review').offsetTop - 12);
+        }""")
+        page.wait_for_timeout(400)
         OUT_IMAGE.parent.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(OUT_IMAGE))
         browser.close()
