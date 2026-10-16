@@ -53,10 +53,11 @@ what it got wrong before you sing it.
 ```sh
 cp config.example.toml config.toml
 $EDITOR config.toml   # set whisper_url to your Whisper server
-docker compose up -d
+docker compose up -d --build
 ```
 
-Open `http://localhost:8000`, fill in the form and press **CREATE SONG**.
+Open `http://localhost:8000`, fill in the form and press **CREATE SONG**. To
+update, `git pull` and run the same `docker compose` command again.
 
 Finished songs go to `output_dir` (`/data/output` in the container). To write
 them straight into your game's song collection, mount that folder there in
@@ -211,6 +212,10 @@ pytest
 
 `pytest` also runs the web UI's JavaScript tests in `tests/js` when Node is
 installed. Pull requests run the full suite in CI.
+
+songtrace is developed on a private forge and published to
+[GitHub](https://github.com/branderson/songtrace) as a read-only mirror; see
+`mirror/README.md`.
 
 `scripts/screenshot_webui.py` regenerates `docs/images/webui.png` from a
 seeded copy of the app (`playwright install chromium` first). With `ffmpeg` on
