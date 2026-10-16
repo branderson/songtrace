@@ -1,9 +1,6 @@
 services:
   songtrace:
-    # built here by default; set IMAGE_PREFIX (and IMAGE_TAG) to pull a
-    # published image instead, see the README's quick start
     build: .
-    image: ${IMAGE_PREFIX:-}songtrace:${IMAGE_TAG:-latest}
     ports:
       - "8000:8000"
     volumes:

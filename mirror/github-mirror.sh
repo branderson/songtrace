@@ -54,9 +54,8 @@ transform() {
         || die "README.md: no title to put the mirror notice under"
 }
 
-# Issues, pull requests, wiki and the like off; Actions stays on, since it
-# publishes the image. Settings rather than content, so a sync does not
-# reapply them; run once after creating the repository.
+# Issues, pull requests, wiki and the like off. Settings rather than content,
+# so a sync does not reapply them; run once after creating the repository.
 settings() {
     command -v gh >/dev/null || die "--settings needs the gh CLI"
     gh api -X PATCH "repos/$MIRROR_REPO" --silent \
