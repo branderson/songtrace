@@ -378,19 +378,32 @@ button { cursor: pointer; }
 }
 #review h3 span { color: var(--text-muted); font-weight: 400; }
 
-/* sticks to the top of #main so the video stays in frame as the lyrics scroll */
-#player { position: sticky; top: 0; z-index: 2; margin: 0 0 14px; padding: 6px 0 10px; background: var(--bg); }
+/* sticks to the top of #main so the transport stays in reach as the lyrics
+   scroll; the video is a glance at the side, not the thing being worked on */
+#player {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 6px 0 10px;
+  background: var(--bg);
+}
+#player[hidden] { display: none; }
 #player-video {
-  display: block;
-  width: 100%;
-  max-height: 30vh;
+  order: 1;
+  flex: none;
+  width: 192px;
+  aspect-ratio: 16 / 9;
   background: #000;
   border: 1px solid var(--border);
   border-radius: 2px;
 }
 #player-video[hidden] { display: none; }
 /* the native transport renders light otherwise, against everything around it */
-#player-media { display: block; width: 100%; margin-top: 8px; color-scheme: dark; }
+#player-media { flex: 1; min-width: 0; color-scheme: dark; }
 
 #sheet { margin: 14px 0; padding: 12px 14px 10px; background: var(--panel); border: 1px solid var(--border); }
 #sheet[hidden] { display: none; }
@@ -405,9 +418,10 @@ button { cursor: pointer; }
   color: var(--text-muted);
 }
 .sheet-nav .action:disabled { opacity: 0.35; cursor: default; }
-.sheet-badges { display: flex; gap: 8px; margin-left: auto; }
+.sheet-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
 .sheet-badge {
   padding: 2px 8px;
+  white-space: nowrap;
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 0.66rem;
@@ -417,6 +431,8 @@ button { cursor: pointer; }
   border-radius: 2px;
 }
 .sheet-badge-edited { color: var(--aqua); }
+.sheet-badge-pinned { color: var(--purple); }
+.sheet-nav .sheet-realign:not(:disabled) { color: var(--bg); background: var(--purple); border-color: var(--purple); }
 .sheet-badge-low { color: var(--fail); }
 .sheet-grid {
   display: flex;
@@ -1424,6 +1440,11 @@ const sheetReady = import("/static/sheet.js").then((m) => {
       media.currentTime = from;
       stopAt = to;
       media.play().catch(() => {});
+    },
+    // the realignment is a new build of the song, followed like any other
+    onRealign: (id) => {
+      selectedId = id;
+      refreshJobs();
     },
     // a saved line changes the notes the lyric list draws
     onSaved: (data) => {

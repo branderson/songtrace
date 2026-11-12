@@ -1,22 +1,9 @@
 from songtrace.lyrics import normalize_lyrics
 from songtrace.whisper_client import TranscriptSegment
-from songtrace.stages.transcribe import (classify_lyrics_match, lyrics_similarity,
-                                         recovered_spans, vocal_sections)
+from songtrace.stages.transcribe import classify_lyrics_match, lyrics_similarity
 
 def seg(s, e, t=""):
     return TranscriptSegment(start=s, end=e, text=t)
-
-def test_vocal_sections_merges_close_segments():
-    sections = vocal_sections([seg(2, 5), seg(6, 9), seg(30, 33)])
-    assert sections == [(1.0, 10.0), (29.0, 34.0)]
-
-def test_vocal_sections_handles_out_of_order_segments():
-    sections = vocal_sections([seg(30, 33), seg(1, 4)])
-    assert sections == [(0.0, 5.0), (29.0, 34.0)]
-
-def test_vocal_sections_keeps_contained_segment():
-    sections = vocal_sections([seg(1, 10), seg(3, 5)])
-    assert sections == [(0.0, 11.0)]
 
 def test_similarity_high_for_matching_lyrics():
     ref = normalize_lyrics("it's one two three\nfour five six seven eight")
@@ -52,14 +39,11 @@ def test_classify_lyrics_match_keeps_partially_matched_lines():
     assert dropped == []
 
 def test_classify_lyrics_match_scopes_missing_span_to_adlib_not_whole_section():
-    # matched line and an unmatched ad-lib close enough together that
-    # vocal_sections would merge them into one section; missing_spans must
-    # stay tight around the ad-lib so the review marks the right place.
+    # a matched line and an unmatched ad-lib close together: missing_spans
+    # must stay tight around the ad-lib so the review marks the right place.
     ref = normalize_lyrics("it's one two three\nfour five six seven eight")
     segs = [seg(1, 4, "it's one two three four five six seven eight"),
             seg(6, 8, "completely unrelated ad lib")]
-    sections = vocal_sections(segs)
-    assert sections == [(0.0, 9.0)]      # confirms the two segments do merge
     dropped, missing = classify_lyrics_match(segs, ref)
     assert dropped == []
     assert missing == [(5.0, 9.0)]
@@ -85,11 +69,24 @@ def test_untranscribed_singing_elsewhere_does_not_keep_a_line():
     assert dropped == [1]
 
 
-def test_recovered_spans_are_the_singing_between_heard_neighbours():
+def test_singing_before_anything_heard_keeps_the_first_line():
     ref = normalize_lyrics(THREE_LINES)
     segs = [seg(10, 12, "four five six"), seg(20, 22, "seven eight nine")]
-    unheard = [(3.0, 9.0), (14.0, 18.0), (30.0, 35.0)]
-    # line 0 comes before anything heard, so only the singing before line 1
-    # can stand in for it; the other spans have no missing line around them
-    assert recovered_spans(segs, ref, unheard) == [(3.0, 9.0)]
-    assert classify_lyrics_match(segs, ref, unheard=unheard)[0] == []
+    assert classify_lyrics_match(segs, ref)[0] == [0]
+    assert classify_lyrics_match(segs, ref, unheard=[(3.0, 9.0)])[0] == []
+
+
+def test_a_repeated_chorus_still_matches():
+    # over 200 words, with the chorus's words each over 1% of them: difflib's
+    # autojunk would refuse to match any of them
+    chorus = "and you should be sad\ni'm sorry you should be sad"
+    verses = [f"verse {n} line {k} " + " ".join(f"w{n}{k}{j}" for j in range(6))
+              for n in range(4) for k in range(4)]
+    lyrics = "\n".join(sum(([v, chorus] for v in verses), []))
+    ref = normalize_lyrics(lyrics)
+    assert len(ref.words) > 200
+    # every verse misheard, every chorus heard right
+    heard = sum(([f"misheard{n} " * 8, chorus.replace("\n", " ")]
+                 for n in range(len(verses))), [])
+    segs = [seg(0, 1, " ".join(heard))]
+    assert lyrics_similarity(segs, ref) > 0.4

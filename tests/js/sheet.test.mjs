@@ -47,7 +47,13 @@ test("a line spans its notes and words", () => {
 });
 
 import { readFileSync } from "node:fs";
-import { SHORTCUTS, comboParts } from "../../src/songtrace/static/sheet.js";
+import { SHORTCUTS, clock, comboParts } from "../../src/songtrace/static/sheet.js";
+
+test("a pin's time reads as minutes and tenths of a second", () => {
+  assert.equal(clock(23.25), "0:23.3");
+  assert.equal(clock(59.96), "1:00.0");
+  assert.equal(clock(125.04), "2:05.0");
+});
 
 test("shortcut combos split into keys and mouse actions", () => {
   assert.deepEqual(comboParts("Shift+click / Tab"), [

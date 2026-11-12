@@ -187,3 +187,32 @@ def test_moved_breaks_follow_their_lines_and_keep_the_file(tmp_path):
     assert (tmp_path / edits.EDITS_FILE).exists()
     moved = edits.load(tmp_path, [["zero"], LYRICS[0], LYRICS[1], ["other"]])
     assert moved["breaks"] == {"2": 3.5}      # line 2's words changed: its break goes
+
+
+def test_pins_are_checked_and_kept_in_line_order():
+    data = edits._empty(LYRICS)
+    edits.set_anchors(data, {"0": 1.5, 2: "8"})
+    assert data["anchors"] == {"0": 1.5, "2": 8.0}
+    edits.set_anchors(data, {0: None})
+    assert data["anchors"] == {"2": 8.0}
+    for bad in ({3: 1.0}, {"x": 1.0}, {1: -1}, {1: "soon"}, {1: float("nan")},
+                {1: 9.0}, {1: 8.0}):   # the last two: line 1 at or after line 2
+        with pytest.raises(ValueError):
+            edits.set_anchors(data, bad)
+    assert data["anchors"] == {"2": 8.0}
+
+
+def test_pins_follow_their_lines_and_keep_the_file(tmp_path):
+    data = edits._empty(LYRICS)
+    edits.set_anchors(data, {0: 1.0, 2: 6.5})
+    edits.save(tmp_path, data)
+    moved = edits.load(tmp_path, [["zero"], LYRICS[0], LYRICS[1], ["other"]])
+    assert moved["anchors"] == {"1": 1.0}     # line 2's words changed: its pin goes
+
+
+def test_an_edits_file_from_before_pins_loads(tmp_path):
+    data = edits._empty(LYRICS)
+    del data["anchors"]
+    edits.set_grid(data, 300, 1000)
+    (tmp_path / edits.EDITS_FILE).write_text(json.dumps(data))
+    assert edits.load(tmp_path, LYRICS)["anchors"] == {}

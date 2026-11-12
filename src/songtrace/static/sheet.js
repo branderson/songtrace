@@ -13,7 +13,6 @@ const CONTEXT = 0.75;     // seconds shown either side of the line
 const BREAK_REACH = 3;    // seconds past the line the page grows to show a break
 const EDGE = 6;           // px from a note's end that grabs it for resizing
 const KINDS = { "*": "golden", F: "free", R: "rap", G: "golden-rap" };
-const KEYS_OPEN = "songtrace.sheet-keys";
 
 // The sheet's controls, grouped as an editor's reference card lists them.
 // "+" joins keys pressed together, " / " separates alternatives, and a
@@ -53,9 +52,16 @@ export const SHORTCUTS = [
     ["Ctrl+Shift+Z / Ctrl+Y", "redo"],
     ["Ctrl+S", "save"],
     ["P", "play"],
+    ["A", "pin its start to the playhead"],
     ["Page Up / Page Down", "previous, next line"],
     ["?", "show or hide these keys"]]],
 ];
+
+// m:ss.s, rounded first so 59.96 reads 1:00.0 rather than 0:60.0
+export function clock(t) {
+  const r = Math.round(t * 10) / 10;
+  return `${Math.floor(r / 60)}:${(r % 60).toFixed(1).padStart(4, "0")}`;
+}
 
 // "Shift+Tab / Esc" as key caps, with mouse actions left as words
 export function comboParts(combo) {
@@ -124,7 +130,7 @@ function div(cls, text = null) {
   return node;
 }
 
-export function createSheet(root, { seek, playLine, onSaved }) {
+export function createSheet(root, { seek, playLine, onSaved, onRealign }) {
   const button = (label, title, onClick, cls = "action") => {
     const b = document.createElement("button");
     b.type = "button";
@@ -140,8 +146,9 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   const next = button("NEXT ▶", "next line (Page Down)", () => page(1));
   const nav = div("sheet-nav");
   const keysButton = button("KEYS ?", "keyboard shortcuts (?)", () => toggleKeys());
-  keysButton.setAttribute("aria-expanded", "false");
-  nav.append(prev, title, next, badges, keysButton);
+  const realignButton = button("REALIGN", "place every other line around the pinned ones",
+                               () => realign(), "action sheet-realign");
+  nav.append(prev, title, next, badges, realignButton, keysButton);
 
   const tools = {
     undo: button("UNDO", "Ctrl+Z", () => undo()),
@@ -153,6 +160,8 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     free: button("FREESTYLE", "freestyle note (F)", () => kind("F")),
     rap: button("RAP", "rap note (R)", () => kind("R")),
     play: button("▶ LINE", "play this line (P)", () => playCurrent()),
+    pin: button("PIN START", "this line starts at the playhead (A)", () => pinHere()),
+    unpin: button("UNPIN", "let the aligner place this line again", () => unpin()),
     discard: button("DISCARD", "drop unsaved changes to this line", () => discard()),
     revert: button("REVERT", "go back to the generated notes for this line", () => revert()),
     save: button("SAVE LINE", "Ctrl+S", () => save(), "action sheet-save"),
@@ -164,7 +173,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   toolbar.append(group(tools.undo, tools.redo),
                  group(tools.split, tools.merge, tools.remove),
                  group(tools.golden, tools.free, tools.rap),
-                 group(tools.play), status,
+                 group(tools.play), group(tools.pin, tools.unpin), status,
                  group(tools.discard, tools.revert, tools.save));
 
   const plot = div("sheet-plot");
@@ -245,19 +254,16 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   }
   root.replaceChildren(nav, stale, gridBar, toolbar, keys, plot, syllables, words, help);
 
-  // stays as the person left it, across lines, songs and visits
   function showKeys(open) {
     keys.hidden = !open;
     help.hidden = open;
+    keysButton.textContent = open ? "HIDE KEYS" : "KEYS ?";
     keysButton.setAttribute("aria-expanded", String(open));
-    try { localStorage.setItem(KEYS_OPEN, open ? "1" : ""); } catch {}
   }
   function toggleKeys() {
     showKeys(keys.hidden);
   }
-  let keysOpen = false;
-  try { keysOpen = !!localStorage.getItem(KEYS_OPEN); } catch {}
-  showKeys(keysOpen);
+  showKeys(false);
 
   let review = null;
   let curve = null;
@@ -272,6 +278,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
   let selected = new Set();
   let drag = null;
   let saving = false;
+  let now = 0;            // the playhead, in seconds
 
   const visible = () => review.lines.filter(l => !l.dropped && lineSpan(l));
   // the line being edited: its notes and the breaks either side of it, as
@@ -504,6 +511,43 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     if (Object.keys(moved).length) await send("breaks", "PUT", moved, "saving…", "saved");
   }
 
+  // send() reopens the line, which would drop its unsaved notes
+  function pinHere() {
+    if (saving) return;
+    if (dirty()) { say("save or discard this line's changes first", true); return; }
+    const t = now;
+    send("anchors", "PUT", { [index]: t }, "pinning…",
+         `pinned at ${clock(t)}; REALIGN to place the other lines around it`);
+  }
+
+  function unpin() {
+    if (saving || review.lines[index].pin == null) return;
+    if (dirty()) { say("save or discard this line's changes first", true); return; }
+    send("anchors", "PUT", { [index]: null }, "unpinning…", "unpinned");
+  }
+
+  async function realign() {
+    if (saving) return;
+    if (dirty()) { say("save or discard this line's changes first", true); return; }
+    saving = true;
+    render();
+    say("starting the realignment…");
+    try {
+      const resp = await fetch(`/api/jobs/${jobId}/realign`, { method: "POST" });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        say(err.detail || `error ${resp.status}`, true);
+        return;
+      }
+      onRealign((await resp.json()).id);
+    } catch {
+      say("could not reach songtrace", true);
+    } finally {
+      saving = false;
+      render();
+    }
+  }
+
   function revert() {
     if (!review.lines[index].edited || saving) return;
     if (!confirm("Go back to the generated notes for this line? Your edit is lost.")) return;
@@ -682,6 +726,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     const tags = [];
     if (dirty()) tags.push(["unsaved", "sheet-badge-dirty"]);
     if (line.edited) tags.push(["edited", "sheet-badge-edited"]);
+    if (line.pin != null) tags.push([`pinned ${clock(line.pin)}`, "sheet-badge-pinned"]);
     if (notes().some(n => n.low_confidence)) tags.push(["low confidence", "sheet-badge-low"]);
     badges.replaceChildren(...tags.map(([text, cls]) => div(`sheet-badge ${cls}`, text)));
 
@@ -711,6 +756,10 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     tools.discard.disabled = !dirty() || saving;
     tools.save.disabled = !dirty() || saving;
     tools.revert.disabled = !line.edited || saving;
+    tools.pin.disabled = saving;
+    tools.unpin.disabled = line.pin == null || saving;
+    realignButton.hidden = !review.realign_pending;
+    realignButton.disabled = saving;
   }
 
   // --- pointer -------------------------------------------------------------
@@ -895,6 +944,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
       return;
     }
     if (key.toLowerCase() === "p") { handled(); playCurrent(); return; }
+    if (key.toLowerCase() === "a") { handled(); pinHere(); return; }
     if (!selected.size) return;
     const arrows = { ArrowLeft: -1, ArrowRight: 1 };
     if (key in arrows) {
@@ -956,6 +1006,7 @@ export function createSheet(root, { seek, playLine, onSaved }) {
     },
     isDirty: dirty,
     setTime(t) {
+      now = t;
       if (!view) return;
       const inside = t >= view.t0 && t <= view.t1;
       playhead.hidden = !inside;

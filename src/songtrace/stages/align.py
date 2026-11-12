@@ -1,16 +1,17 @@
 import json
+import math
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
+from .. import edits
 from ..lyrics import alignment_token, normalize_lyrics
 from ..models import on_release
-from ..pipeline import Ctx, PipelineError, Stage
-from ..whisper_client import TranscriptSegment
-from .transcribe import (classify_lyrics_match, load_transcript, lyrics_similarity,
-                         recovered_spans, vocal_sections)
+from ..pipeline import Ctx, Stage
+from .transcribe import classify_lyrics_match, load_transcript, lyrics_similarity
 
+# Below this, Whisper's text says nothing reliable about which lines were sung
 SIMILARITY_THRESHOLD = 0.4
 # MMS_FA's wildcard token: any audio the transcript does not cover
 STAR = "*"
@@ -20,15 +21,27 @@ SINGING_BELOW_LOUD_DB = 25.0
 # Shorter stretches are breaths, ad-libs or Whisper's loose segment edges.
 MIN_UNHEARD_SEC = 3.0
 
-# a stage aligns section by section, so the model is cached across the calls
-# within one run and dropped at the end of it
+# The vocals are run through the model this much at a time, with context
+# either side, so memory stays the same however long the singing runs.
+CHUNK_SEC = 30.0
+CONTEXT_SEC = 2.0
+# wav2vec2 emits one frame per this many 16 kHz samples
+FRAME_SAMPLES = 320
+# A line pinned by hand may start this much before the pin: a pin set by
+# pausing on the first word tends to land just after it.
+PIN_SLACK_SEC = 0.5
+
 _model_cache = {}
 
 
 def _get_model(device: str):
     if device not in _model_cache:
         from torchaudio.pipelines import MMS_FA as bundle
-        _model_cache[device] = bundle.get_model().to(device)
+        model = bundle.get_model().to(device)
+        # vocal_emission normalises the whole song itself: per chunk, a quiet
+        # intro's separation bleed would be raised to the level of singing
+        model.normalize_waveform = False
+        _model_cache[device] = model
     return _model_cache[device]
 
 
@@ -37,8 +50,9 @@ def unload_model() -> None:
     _model_cache.clear()
 
 
-def force_align_section(vocals_path: Path, start: float, end: float,
-                        tokens: list[str], device: str) -> list[tuple[float, float, float]]:
+def vocal_emission(vocals_path: Path, device: str):
+    """MMS_FA's per-frame log-probabilities over the whole vocal stem, and the
+    seconds per frame."""
     import torch
     import torchaudio
     from torchaudio.pipelines import MMS_FA as bundle
@@ -46,19 +60,43 @@ def force_align_section(vocals_path: Path, start: float, end: float,
     from ..audio_io import load_wav
 
     waveform, sr = load_wav(vocals_path)
-    waveform = waveform.mean(0, keepdim=True)
-    lo, hi = int(start * sr), min(int(end * sr), waveform.shape[1])
-    waveform = torchaudio.functional.resample(
-        waveform[:, lo:hi], sr, bundle.sample_rate)
+    rate = bundle.sample_rate
+    wave = torchaudio.functional.resample(waveform.mean(0, keepdim=True), sr, rate)
+    wave = torch.nn.functional.layer_norm(wave, wave.shape)
+    n = wave.shape[1]
+    # whole frames, so each chunk's frames start on the song's frame grid
+    chunk = int(CHUNK_SEC * rate) // FRAME_SAMPLES * FRAME_SAMPLES
+    context = int(CONTEXT_SEC * rate) // FRAME_SAMPLES * FRAME_SAMPLES
+    model = _get_model(device)
+    parts = []
+    with torch.inference_mode():
+        for s in range(0, n, chunk):
+            a, b = max(0, s - context), min(n, s + chunk + context)
+            emission, _ = model(wave[:, a:b].to(device))
+            lo = (s - a) // FRAME_SAMPLES
+            count = math.ceil((min(s + chunk, n) - s) / FRAME_SAMPLES)
+            parts.append(emission[0, lo:lo + count].cpu())
+    return torch.cat(parts), FRAME_SAMPLES / rate
+
+
+def force_align_section(emission, start: float, end: float,
+                        tokens: list[str]) -> list[tuple[float, float, float]]:
+    """Each token's start, end and score, aligned within start..end seconds;
+    none when that is too short to hold them."""
+    from torchaudio.pipelines import MMS_FA as bundle
+
+    frames, frame = emission
+    lo, hi = int(start / frame), min(math.ceil(end / frame), len(frames))
     # MMS_FA only models a-z and apostrophe; anything else becomes the star token.
     vocab = bundle.get_dict()
     tokens = ["".join(c if c in vocab else STAR for c in t) for t in tokens]
-    with torch.inference_mode():
-        emission, _ = _get_model(device)(waveform.to(device))
-        spans = bundle.get_aligner()(emission[0], bundle.get_tokenizer()(tokens))
-    frame = (hi - lo) / sr / emission.shape[1]
-    return [(start + s[0].start * frame,
-             start + s[-1].end * frame,
+    ids = bundle.get_tokenizer()(tokens)
+    flat = [i for t in ids for i in t]
+    # CTC needs a frame per token, and a blank between each repeated one
+    if hi - lo < len(flat) + sum(a == b for a, b in zip(flat, flat[1:])):
+        return []
+    spans = bundle.get_aligner()(frames[lo:hi], ids)
+    return [((lo + s[0].start) * frame, (lo + s[-1].end) * frame,
              sum(t.score for t in s) / len(s)) for s in spans]
 
 
@@ -95,17 +133,18 @@ def untranscribed_singing(vocals_path: Path, segments,
     return [(a, b) for a, b in merged if b - a >= MIN_UNHEARD_SEC]
 
 
-def _assign_lines_to_sections(line_indices: list[int], sections) -> list[list[int]]:
-    """Split matched lyric line indices across vocal sections proportionally to section duration."""
-    total = sum(b - a for a, b in sections) or 1.0
-    n = len(line_indices)
-    groups, elapsed, start = [], 0.0, 0
-    for i, (a, b) in enumerate(sections):
-        elapsed += b - a
-        stop = n if i == len(sections) - 1 else min(n, round(n * elapsed / total))
-        groups.append(line_indices[start:max(stop, start)])
-        start = max(stop, start)
-    return groups
+def _pieces(n_lines: int, pins: dict[int, float], duration: float
+            ) -> list[tuple[range, tuple[float, float], bool]]:
+    """The song split at each pinned line: the lines of each piece, the time
+    they are aligned in, and whether the piece starts at a pin."""
+    starts = sorted((li, max(0.0, t - PIN_SLACK_SEC)) for li, t in pins.items()
+                    if 0 <= li < n_lines)
+    pinned = bool(starts) and starts[0][0] == 0
+    if not pinned:
+        starts.insert(0, (0, 0.0))
+    ends = [(li, t) for li, t in starts[1:]] + [(n_lines, max(duration, starts[-1][1]))]
+    return [(range(a, b), (ta, tb), pinned or i > 0)
+            for i, ((a, ta), (b, tb)) in enumerate(zip(starts, ends))]
 
 
 def _interpolate(rows: list[dict], lo_bound: float, hi_bound: float) -> None:
@@ -134,22 +173,24 @@ def _enforce_monotonic(rows: list[dict]) -> None:
         r["end"] = prev = max(r["end"], r["start"])
 
 
-def _align_section(vocals: Path, sec: tuple[float, float], words: list[tuple[str, int]],
-                   language: str | None, device: str) -> list[dict]:
+def _align_section(emission, sec: tuple[float, float], words: list[tuple[str, int]],
+                   language: str | None, pinned: bool) -> list[dict]:
     tokens = [alignment_token(w, language) for w, _ in words]
     # A star before, between and after lines lets speech, laughter or an
     # ad-lib there go unexplained rather than claim the next line's letters.
+    # None before a pinned line: it starts where it was pinned.
     seq, prev_line = [], None
     for (_, line_index), token in zip(words, tokens):
         if not token:
             continue
         if line_index != prev_line:
-            seq.append(STAR)
+            if not pinned or line_index != words[0][1]:
+                seq.append(STAR)
             prev_line = line_index
         seq.append(token)
     if seq:
         seq.append(STAR)
-    spans = force_align_section(vocals, sec[0], sec[1], seq, device) if seq else []
+    spans = force_align_section(emission, sec[0], sec[1], seq) if seq else []
     aligned = iter(span for span, token in zip(spans, seq) if token != STAR)
     rows, blank = [], (None, None, 0.0)
     for (word, line_index), token in zip(words, tokens):
@@ -163,34 +204,36 @@ def _align_section(vocals: Path, sec: tuple[float, float], words: list[tuple[str
 def _run(ctx: Ctx) -> None:
     ref = normalize_lyrics(ctx.inp.lyrics_text)
     segments = sorted(load_transcript(ctx), key=lambda s: s.start)
-    sim = lyrics_similarity(segments, ref)
-    if sim < SIMILARITY_THRESHOLD:
-        raise PipelineError(
-            f"lyrics don't match audio (similarity {sim:.2f}) — "
-            "wrong lyrics or wrong recording?")
     vocals = ctx.work / "vocals.wav"
-    unheard = untranscribed_singing(vocals, segments)
-    dropped_lines, missing_spans = classify_lyrics_match(segments, ref,
-                                                         unheard=unheard)
-    # lines Whisper missed are aligned against the singing it had no text for;
-    # only that singing, so an untranscribed ad-lib cannot draw lines into it
-    recovered = [TranscriptSegment(a, b, "")
-                 for a, b in recovered_spans(segments, ref, unheard)]
-    # normalised so an inverted span can never collapse a section onto one instant
-    sections = [(min(a, b), max(a, b))
-                for a, b in vocal_sections(segments + recovered)]
-    matched = [i for i in range(len(ref.lines)) if i not in set(dropped_lines)]
+    sim = lyrics_similarity(segments, ref)
+    warnings = []
+    if sim >= SIMILARITY_THRESHOLD:
+        dropped_lines, missing_spans = classify_lyrics_match(
+            segments, ref, unheard=untranscribed_singing(vocals, segments))
+    else:
+        # nothing to tell sung lines from unsung ones, so every line is placed
+        dropped_lines, missing_spans = [], []
+        warnings.append(f"Whisper's transcript barely matches the lyrics (similarity "
+                        f"{sim:.2f}); check the timing, and that the lyrics are for "
+                        "this recording")
+    pins = {int(k): t for k, t in edits.load(ctx.work, ref.lines)["anchors"].items()}
+    # a line pinned by hand is sung, whatever Whisper heard
+    dropped_lines = [li for li in dropped_lines if li not in pins]
+    emission = vocal_emission(vocals, ctx.cfg.device)
+    duration = len(emission[0]) * emission[1]
     rows = []
-    for sec, line_idxs in zip(sections, _assign_lines_to_sections(matched, sections)):
-        words = [(w, li) for li in line_idxs for w in ref.lines[li]]
+    for lines, sec, pinned in _pieces(len(ref.lines), pins, duration):
+        words = [(w, li) for li in lines if li not in dropped_lines
+                 for w in ref.lines[li]]
         if words:
-            rows.extend(_align_section(vocals, sec, words, ctx.inp.language,
-                                       ctx.cfg.device))
+            rows.extend(_align_section(emission, sec, words, ctx.inp.language, pinned))
     _enforce_monotonic(rows)
     (ctx.work / "alignment.json").write_text(json.dumps(rows))
     (ctx.work / "align_meta.json").write_text(json.dumps({
         "dropped_lines": dropped_lines,
         "missing_spans": [list(s) for s in missing_spans],
+        "anchors": {str(li): t for li, t in sorted(pins.items())},
+        "warnings": warnings,
     }))
 
 

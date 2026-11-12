@@ -17,8 +17,9 @@ your collection:
 1. **acquire**: downloads the video with `yt-dlp`, or takes your file
 2. **separate**: splits vocals from the backing track (Demucs)
 3. **transcribe**: has your Whisper server transcribe the vocals, to check
-   the lyrics match the recording and to find where the singing is
-4. **align**: places each word of *your* lyrics on the vocals (wav2vec2)
+   the lyrics match the recording and find lines that are never sung
+4. **align**: places each word of *your* lyrics on the vocals (wav2vec2),
+   across the whole song at once
 5. **pitch**: tracks the sung pitch (torchcrepe)
 6. **notes**: turns word timings and pitch into notes
 7. **grid**: snaps the notes to a beat grid
@@ -31,9 +32,8 @@ what it got wrong before you sing it.
 ## Requirements
 
 - **An NVIDIA GPU with CUDA.** songtrace is developed on a 12 GB card.
-  Separating the vocals (Demucs) alone takes about 3.7 GB, and alignment holds
-  a whole stretch of singing in memory at once, so a long song whose vocals
-  never pause needs the most. Cards under 12 GB are untested. Each stage gives
+  Separating the vocals (Demucs) alone takes about 3.7 GB. Cards under 12 GB
+  are untested. Each stage gives
   the GPU back when it finishes (see [Sharing the GPU](#sharing-the-gpu)).
   `device = "cpu"` in the config runs without a GPU, but it is untested, far
   slower, and needs plenty of system RAM.
@@ -97,6 +97,11 @@ song's chart is rewritten on the spot.
   type and charts on **APPLY**. ×2 and ÷2 fix a tempo detected at double or
   half speed, and **ALIGN TO NOTE** puts the selected note on a beat.
   **RESET** goes back to songtrace's choice.
+- **Lines in the wrong place:** play the song, pause where a line starts,
+  show that line on the sheet and press **PIN START** (or A). **REALIGN**
+  rebuilds from the alignment, with each pinned line starting where you put
+  it and the lines between pins placed in the gaps. Pin the first line of each
+  section that went wrong; **UNPIN** lets songtrace place a line again.
 - **Undoing an edit:** **REVERT** returns a line to the generated notes.
 
 Edits are kept apart from what the pipeline generates and laid back over it on

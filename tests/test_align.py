@@ -4,9 +4,10 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from songtrace import edits
 from songtrace.config import Config
 from songtrace.lyrics import normalize_lyrics
-from songtrace.pipeline import Ctx, PipelineError, SongInput
+from songtrace.pipeline import Ctx, SongInput
 from songtrace.stages import align
 from songtrace.whisper_client import TranscriptSegment
 
@@ -17,6 +18,16 @@ REAL_UNTRANSCRIBED_SINGING = align.untranscribed_singing
 def no_untranscribed_singing(monkeypatch):
     """The tests have no vocals.wav; those about missed singing set their own."""
     monkeypatch.setattr(align, "untranscribed_singing", lambda vocals, segments: [])
+
+
+# the vocals the fake emission stands for: 60s of 20ms frames
+DURATION = 60.0
+
+
+@pytest.fixture(autouse=True)
+def fake_emission(monkeypatch):
+    monkeypatch.setattr(align, "vocal_emission",
+                        lambda vocals, device: (np.zeros((3000, 1)), 0.02))
 
 
 LYRICS = "it's one two three\nfour five six seven eight"
@@ -34,7 +45,7 @@ def make_ctx(tmp_path, lyrics=LYRICS, transcript=None):
                work=work, log=lambda m: None)
 
 
-def fake_align(vocals_path, start, end, tokens, device):
+def fake_align(emission, start, end, tokens):
     step = (end - start) / len(tokens)
     return [(start + i * step, start + (i + 1) * step, 0.9)
             for i in range(len(tokens))]
@@ -67,11 +78,14 @@ def test_alignment_covers_all_words(tmp_path, monkeypatch):
     assert starts == sorted(starts)
 
 
-def test_mismatched_lyrics_fail(tmp_path, monkeypatch):
-    monkeypatch.setattr(align, "force_align_section", fake_align)
-    ctx = make_ctx(tmp_path, lyrics="totally unrelated nonsense words banana")
-    with pytest.raises(PipelineError, match="similarity"):
-        align.align_stage().run(ctx)
+def test_a_transcript_unlike_the_lyrics_aligns_every_line_with_a_warning(
+        tmp_path, monkeypatch):
+    lyrics = "totally unrelated nonsense\nwords banana"
+    rows = run_align(tmp_path, monkeypatch, lyrics)
+    check_invariants(rows, lyrics)
+    meta = json.loads((tmp_path / "w" / "align_meta.json").read_text())
+    assert meta["dropped_lines"] == [] and meta["missing_spans"] == []
+    assert "similarity 0.00" in meta["warnings"][0]
 
 
 def test_unalignable_word_interpolated(tmp_path, monkeypatch):
@@ -121,34 +135,7 @@ def test_all_words_unalignable_in_section(tmp_path, monkeypatch):
     rows = json.loads((ctx.work / "alignment.json").read_text())
     check_invariants(rows, lyrics)
     assert all(r["score"] == 0.0 for r in rows)
-    assert rows[-1]["end"] <= 5.0
-
-
-def test_non_chronological_transcript(tmp_path, monkeypatch):
-    transcript = [{"start": 30.0, "end": 33.0, "text": "four five six seven eight"},
-                  {"start": 1.0, "end": 4.0, "text": "it's one two three"}]
-    rows = run_align(tmp_path, monkeypatch, transcript=transcript)
-    check_invariants(rows, LYRICS)
-    assert len({r["start"] for r in rows}) == len(rows)
-    assert rows[3]["end"] <= 5.0
-    assert rows[4]["start"] >= 29.0
-
-
-def test_inverted_section_does_not_collapse(tmp_path, monkeypatch):
-    monkeypatch.setattr(align, "vocal_sections", lambda segments: [(29.0, 5.0)])
-    rows = run_align(tmp_path, monkeypatch)
-    check_invariants(rows, LYRICS)
-    assert len({r["start"] for r in rows}) == len(rows)
-    assert rows[0]["start"] >= 5.0 and rows[-1]["end"] <= 29.0
-
-
-def test_words_split_across_sections(tmp_path, monkeypatch):
-    transcript = [{"start": 1.0, "end": 4.0, "text": "it's one two three"},
-                  {"start": 30.0, "end": 33.0, "text": "four five six seven eight"}]
-    rows = run_align(tmp_path, monkeypatch, transcript=transcript)
-    check_invariants(rows, LYRICS)
-    assert rows[3]["end"] <= 5.0
-    assert rows[4]["start"] >= 29.0
+    assert rows[-1]["end"] <= DURATION
 
 
 def test_align_drops_lines_never_sung(tmp_path, monkeypatch):
@@ -200,7 +187,7 @@ def test_untranscribed_singing_finds_sung_audio_the_transcript_skips(
     assert spans[0][1] == pytest.approx(9.0, abs=0.1)
 
 
-def test_lines_whisper_missed_are_aligned_in_the_untranscribed_singing(
+def test_lines_whisper_missed_are_kept_when_there_is_singing_for_them(
         tmp_path, monkeypatch):
     lyrics = "one two three\nfour five six\nseven eight nine"
     transcript = [{"start": 1.0, "end": 3.0, "text": "one two three"},
@@ -209,8 +196,6 @@ def test_lines_whisper_missed_are_aligned_in_the_untranscribed_singing(
                         lambda vocals, segments: [(20.0, 26.0)])
     rows = run_align(tmp_path, monkeypatch, lyrics, transcript)
     check_invariants(rows, lyrics)
-    middle = [r for r in rows if r["line_index"] == 1]
-    assert all(19.0 <= r["start"] and r["end"] <= 27.0 for r in middle)
     meta = json.loads((tmp_path / "w" / "align_meta.json").read_text())
     assert meta["dropped_lines"] == []
 
@@ -220,7 +205,7 @@ def test_stars_bracket_each_line_and_take_no_words(tmp_path, monkeypatch):
     transcript = [{"start": 0.0, "end": 10.0, "text": "one two three four"}]
     seen = []
 
-    def spy(vocals_path, start, end, tokens, device):
+    def spy(emission, start, end, tokens):
         seen.append(tokens)
         # each star claims a long stretch, so a word given a star's span shows
         spans = [(start + i, start + i + (5.0 if t == "*" else 0.5), 0.9)
@@ -235,3 +220,99 @@ def test_stars_bracket_each_line_and_take_no_words(tmp_path, monkeypatch):
     timed = [r for r in rows if r["word"] != "..."]
     assert all(r["end"] - r["start"] == pytest.approx(0.5) for r in timed)
     check_invariants(rows, lyrics)
+
+
+def test_the_whole_song_is_aligned_at_once(tmp_path, monkeypatch):
+    calls = []
+
+    def spy(emission, start, end, tokens):
+        calls.append((start, end))
+        return fake_align(emission, start, end, tokens)
+
+    transcript = [{"start": 1.0, "end": 4.0, "text": "it's one two three"},
+                  {"start": 30.0, "end": 33.0, "text": "four five six seven eight"}]
+    monkeypatch.setattr(align, "force_align_section", spy)
+    align.align_stage().run(make_ctx(tmp_path, transcript=transcript))
+    assert calls == [(0.0, DURATION)]
+
+
+def pin(ctx, lyrics, anchors):
+    data = edits.load(ctx.work, normalize_lyrics(lyrics).lines)
+    edits.set_anchors(data, anchors)
+    edits.save(ctx.work, data)
+
+
+def test_pinned_lines_split_the_song_and_start_where_pinned(tmp_path, monkeypatch):
+    lyrics = "one two\nthree four\nfive six"
+    transcript = [{"start": 0.0, "end": 10.0, "text": "one two three four five six"}]
+    calls = []
+
+    def spy(emission, start, end, tokens):
+        calls.append((start, end, tokens))
+        return fake_align(emission, start, end, tokens)
+
+    monkeypatch.setattr(align, "force_align_section", spy)
+    ctx = make_ctx(tmp_path, lyrics, transcript)
+    pin(ctx, lyrics, {"1": 20.0})
+    align.align_stage().run(ctx)
+    slack = align.PIN_SLACK_SEC
+    assert calls == [
+        (0.0, 20.0 - slack, ["*", "one", "two", "*"]),
+        # no star before a pinned line: nothing may stand in for its start
+        (20.0 - slack, DURATION, ["three", "four", "*", "five", "six", "*"]),
+    ]
+    rows = json.loads((ctx.work / "alignment.json").read_text())
+    check_invariants(rows, lyrics)
+    assert rows[2]["start"] == pytest.approx(20.0 - slack)
+    meta = json.loads((ctx.work / "align_meta.json").read_text())
+    assert meta["anchors"] == {"1": 20.0}
+
+
+def test_a_pin_on_the_first_line_drops_the_leading_star(tmp_path, monkeypatch):
+    seen = []
+
+    def spy(emission, start, end, tokens):
+        seen.append((start, tokens[0]))
+        return fake_align(emission, start, end, tokens)
+
+    monkeypatch.setattr(align, "force_align_section", spy)
+    ctx = make_ctx(tmp_path)
+    pin(ctx, LYRICS, {"0": 12.0})
+    align.align_stage().run(ctx)
+    assert seen == [(12.0 - align.PIN_SLACK_SEC, "it's")]
+
+
+def test_a_pinned_line_is_never_dropped(tmp_path, monkeypatch):
+    lyrics = "it's one two three\nfour five six seven eight\nnine ten eleven twelve"
+    transcript = [{"start": 1.0, "end": 4.0,
+                   "text": "it's one two three four five six seven eight"}]
+    monkeypatch.setattr(align, "force_align_section", fake_align)
+    ctx = make_ctx(tmp_path, lyrics, transcript)
+    pin(ctx, lyrics, {"2": 40.0})
+    align.align_stage().run(ctx)
+    rows = json.loads((ctx.work / "alignment.json").read_text())
+    check_invariants(rows, lyrics)
+    meta = json.loads((ctx.work / "align_meta.json").read_text())
+    assert meta["dropped_lines"] == []
+
+
+def test_force_align_section_gives_up_on_a_window_too_short(monkeypatch):
+    pytest.importorskip("torchaudio")
+    frames = np.zeros((5, 29), dtype=np.float32)
+    assert align.force_align_section((frames, 0.02), 0.0, 0.1, ["hello"]) == []
+
+
+def test_only_the_pinned_line_loses_its_star(tmp_path, monkeypatch):
+    lyrics = "one\n...\ntwo three"
+    transcript = [{"start": 0.0, "end": 10.0, "text": "one two three"}]
+    seen = []
+
+    def spy(emission, start, end, tokens):
+        seen.append(tokens)
+        return fake_align(emission, start, end, tokens)
+
+    monkeypatch.setattr(align, "force_align_section", spy)
+    ctx = make_ctx(tmp_path, lyrics, transcript)
+    pin(ctx, lyrics, {"1": 20.0})
+    align.align_stage().run(ctx)
+    assert seen == [["*", "one", "*"], ["*", "two", "three", "*"]]

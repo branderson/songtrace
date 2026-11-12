@@ -318,6 +318,20 @@ def test_notes_stage_writes_json(tmp_path):
     assert TimedNote(**data["notes"][0]).pitch == 0
 
 
+def test_notes_stage_carries_the_alignments_warnings(tmp_path):
+    work = tmp_path / "w"
+    work.mkdir()
+    times, f0, conf = flat_pitch()
+    np.savez(work / "pitch.npz", times=times, f0=f0, conf=conf)
+    (work / "alignment.json").write_text(json.dumps([
+        {"word": "gone", "start": 1.0, "end": 1.5, "score": 0.9, "line_index": 0}]))
+    (work / "align_meta.json").write_text(json.dumps({"warnings": ["check the timing"]}))
+    ctx = Ctx(inp=SongInput(title="T", artist="A", lyrics_text="gone"),
+              cfg=Config(whisper_url="u"), work=work, log=lambda m: None)
+    notes_stage_mod.notes_stage().run(ctx)
+    assert json.loads((work / "notes_sec.json").read_text())["warnings"] == ["check the timing"]
+
+
 def test_notes_stage_registered():
     assert "notes" in [s.name for s in all_stages()]
 
