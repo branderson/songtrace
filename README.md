@@ -1,5 +1,8 @@
 # songtrace
 
+> **This is a read-only mirror.** songtrace is developed on a private forge,
+> and issues and pull requests are not accepted here.
+
 Self-hosted karaoke chart builder for [UltraStar](https://usdx.eu/format/) and
 compatible games such as [Melody Mania](https://melodymania.org/). Give it a
 song's video and lyrics and it charts the notes, timing and pitch, ready for
