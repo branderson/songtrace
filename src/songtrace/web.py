@@ -100,6 +100,17 @@ def _cleanup_uploads(cfg: Config, job_id: str, video_path: Path | None) -> None:
             pass
 
 
+def _upload_dirs(cfg: Config, jobs) -> set[Path]:
+    uploads = (cfg.work_dir / "uploads").resolve()
+    dirs = set()
+    for job in jobs:
+        dirs.add(uploads / job.id)
+        for path in (job.inp.video_path, job.inp.cover_path):
+            if path is not None and Path(path).resolve().parent.parent == uploads:
+                dirs.add(Path(path).resolve().parent)
+    return dirs
+
+
 def _discover_jobs(cfg: Config) -> list[Job]:
     discovered = []
     if not cfg.work_dir.exists():
@@ -187,7 +198,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         while True:
             job_id = todo.get()
             with lock:
-                job = jobs[job_id]
+                job = jobs.get(job_id)
+                if job is None:  # deleted while queued
+                    continue
                 job.status = "running"
                 job.started_at = time.time()
 
@@ -441,21 +454,38 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
 
     @app.delete("/api/jobs/{job_id}", status_code=204)
     def delete_job(job_id: str):
+        """Drop a queued job, or delete a finished job's song: its files and
+        every finished job that stands for it, including the runs it replaced."""
         with lock:
             job = jobs.get(job_id)
             if job is None:
                 raise HTTPException(404)
-            if job.status in ("queued", "running"):
+            if job.status == "running":
                 raise HTTPException(409, "job is still in progress")
-            slug = song_slug(job.inp)
-            if any(other.status in ("queued", "running") and song_slug(other.inp) == slug
-                   for other_id, other in jobs.items() if other_id != job_id):
-                raise HTTPException(409, "another job for this song is in progress")
-            jobs.pop(job_id, None)
-            if job_id in order:
-                order.remove(job_id)
-        shutil.rmtree(cfg.work_dir / slug, ignore_errors=True)
-        shutil.rmtree(cfg.output_dir / slug, ignore_errors=True)
+            if job.status == "queued":
+                removed, slug = {job_id}, None
+            else:
+                slug = song_slug(job.inp)
+                if any(j.status in ("queued", "running") and song_slug(j.inp) == slug
+                       for j in jobs.values()):
+                    raise HTTPException(409, "another job for this song is in progress")
+                removed = {i for i, j in jobs.items() if song_slug(j.inp) == slug}
+                frontier = list(removed)
+                while frontier:
+                    parent = jobs.get(jobs[frontier.pop()].rebuilt_from)
+                    if parent and parent.id not in removed:
+                        removed.add(parent.id)
+                        frontier.append(parent.id)
+            gone = [jobs.pop(i) for i in removed]
+            for i in removed:
+                order.remove(i)
+            # a rebuild reads its parent's uploads, so one that survives keeps them
+            kept = _upload_dirs(cfg, jobs.values())
+        for d in _upload_dirs(cfg, gone) - kept:
+            shutil.rmtree(d, ignore_errors=True)
+        if slug is not None:
+            shutil.rmtree(cfg.work_dir / slug, ignore_errors=True)
+            shutil.rmtree(cfg.output_dir / slug, ignore_errors=True)
 
     def _resolve_media(job: Job, header: str) -> Path | None:
         """The file a song folder's #MP3/#VIDEO/#COVER header points at."""

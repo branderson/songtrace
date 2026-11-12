@@ -498,7 +498,7 @@ def _focus_flaws(html):
     flaws = []
 
     queue = _fn_body(html, "renderJobs")
-    if 'querySelectorAll(".job")' not in queue or "dataset.id" not in queue:
+    if 'querySelectorAll(".job-row")' not in queue or "dataset.id" not in queue:
         flaws.append("queue cards are not matched to the payload by id")
     if re.search(r"replaceChildren\(\s*\.\.\.", queue):
         flaws.append("the queue is re-rendered wholesale, detaching every card")
@@ -729,10 +729,10 @@ def test_review_playback_tracks_the_media_element():
 # each mutation is a plausible regression; the checker above must reject all of them
 MUTATIONS = [
     (_focus_flaws, "queue: card moved unconditionally",
-     "if (jobsDiv.children[i] !== card) jobsDiv.insertBefore",
+     "if (jobsDiv.children[i] !== row) jobsDiv.insertBefore",
      "jobsDiv.insertBefore"),
     (_focus_flaws, "queue: rebuilt wholesale",
-     "jobsDiv.insertBefore(card, jobsDiv.children[i] ?? null)",
+     "jobsDiv.insertBefore(row, jobsDiv.children[i] ?? null)",
      "jobsDiv.replaceChildren(...jobs.map(jobCard))"),
     (_focus_flaws, "copy-path: unchanged panel rebuilt anyway",
      "if (path === shown) return;", ""),
@@ -755,8 +755,7 @@ MUTATIONS = [
      "if (reviewActions.dataset.jobId === job.id && shown.join() === wanted.join()) return;",
      ""),
     (_rebuild_full_and_delete_flaws, "delete: confirmation dialog removed",
-     'if (!confirm("Delete this song? This removes all its files and cannot be undone.")) return;',
-     ""),
+     "if (!confirm(", "if (!("),
     (_rebuild_full_and_delete_flaws, "rebuild-full: no longer offered on a done job",
      '["rebuild-full", "delete"]', '["delete"]'),
     (_rebuild_flaws, "prefill: selecting a queue entry no longer loads its inputs",
@@ -846,9 +845,11 @@ def test_index_has_rebuild_hooks():
 
 
 def test_rebuild_controls_are_not_offered_mid_run():
-    """Both endpoints answer 409 while a job is queued or running."""
+    """Both endpoints answer 409 while a job is queued or running; a queued job
+    can only be dropped."""
     actions = _fn_body(_index_html(), "renderActions")
-    assert '"queued"' not in actions and '"running"' not in actions
+    assert '"running"' not in actions
+    assert re.findall(r'"queued" \? (\[[^\]]*\])', actions) == ['["delete"]']
 
 
 def test_lineage_marker_survives_in_the_accessibility_tree():
@@ -1295,6 +1296,88 @@ def test_delete_of_a_running_job_is_409(tmp_path):
         release.set()
     wait_status(client, parent, "done")
     assert client.get(f"/api/jobs/{parent}").status_code == 200
+
+
+def test_delete_of_a_queued_job_drops_it_without_running_it(tmp_path):
+    release = threading.Event()
+    ran = []
+
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        ran.append(inp.title)
+        release.wait(5)
+        return slug_runner(inp, cfg)
+
+    client, cfg = make_client(tmp_path, runner)
+    first = client.post("/api/jobs", data=rebuild_form(title="One")).json()["id"]
+    second = client.post("/api/jobs", data=rebuild_form(title="Two")).json()["id"]
+    try:
+        wait_status(client, first, "running")
+        assert client.delete(f"/api/jobs/{second}").status_code == 204
+        assert client.get(f"/api/jobs/{second}").status_code == 404
+    finally:
+        release.set()
+    wait_status(client, first, "done")
+    third = make_done_job(client, title="Three")
+    assert ran == ["One", "Three"]
+    assert client.get(f"/api/jobs/{third}").json()["status"] == "done"
+
+
+def test_delete_of_a_queued_rebuild_keeps_the_song(tmp_path):
+    release = threading.Event()
+    calls = []
+
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        calls.append(1)
+        if len(calls) == 2:
+            release.wait(5)
+        return slug_runner(inp, cfg)
+
+    client, cfg = make_client(tmp_path, runner)
+    parent = make_done_job(client)
+    blocker = client.post("/api/jobs", data=rebuild_form(title="Other")).json()["id"]
+    try:
+        wait_status(client, blocker, "running")
+        child = client.post(f"/api/jobs/{parent}/rebuild-full").json()["id"]
+        assert client.delete(f"/api/jobs/{child}").status_code == 204
+    finally:
+        release.set()
+    wait_status(client, blocker, "done")
+    assert (cfg.output_dir / "A - T" / "song.txt").exists()
+    assert client.get(f"/api/jobs/{parent}").json()["status"] == "done"
+
+
+def test_delete_takes_the_songs_earlier_runs_with_it(tmp_path):
+    client, cfg = make_client(tmp_path, slug_runner)
+    renamed = make_done_job(client, title="Old")
+    parent = client.post(f"/api/jobs/{renamed}/rebuild",
+                         data=rebuild_form()).json()["id"]
+    wait_status(client, parent, "done")
+    child = client.post(f"/api/jobs/{parent}/rebuild-full").json()["id"]
+    wait_status(client, child, "done")
+    other = make_done_job(client, title="Other")
+
+    assert client.delete(f"/api/jobs/{child}").status_code == 204
+
+    assert [j["id"] for j in client.get("/api/jobs").json()] == [other]
+    assert not (cfg.output_dir / "A - T").exists()
+    assert (cfg.output_dir / "A - Other").exists()
+
+
+def test_delete_removes_uploads_no_surviving_job_uses(tmp_path):
+    client, cfg = make_client(tmp_path, slug_runner)
+    job_id = client.post("/api/jobs", data=rebuild_form(),
+                         files={"cover": ("c.jpg", b"img")}).json()["id"]
+    wait_status(client, job_id, "done")
+    assert (cfg.work_dir / "uploads" / job_id / "c.jpg").exists()
+    renamed = client.post(f"/api/jobs/{job_id}/rebuild",
+                          data=rebuild_form(title="T2")).json()["id"]
+    wait_status(client, renamed, "done")
+
+    # the old run is history under its own slug; the rebuild still reads its cover
+    client.delete(f"/api/jobs/{job_id}")
+    assert (cfg.work_dir / "uploads" / job_id / "c.jpg").exists()
+    client.delete(f"/api/jobs/{renamed}")
+    assert not (cfg.work_dir / "uploads" / job_id).exists()
 
 
 def test_delete_of_a_job_with_an_active_rebuild_is_409(tmp_path):
