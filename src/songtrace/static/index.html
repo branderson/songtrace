@@ -641,6 +641,24 @@ button { cursor: pointer; }
 .job-mark { grid-area: 1 / 2; justify-self: end; font-size: 0.8rem; color: var(--text-muted); }
 .job-edits { grid-area: 2 / 2; justify-self: end; display: flex; gap: 6px; font-size: 0.72rem; }
 .job-edits-kept { color: var(--aqua); }
+.job-row { position: relative; }
+.job-delete {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 0 6px;
+  border: 0;
+  background: var(--panel-raised);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.job-delete:hover { color: var(--fail); }
+@media (hover: hover) {
+  .job-row:not(:hover, :focus-within) .job-delete { opacity: 0; }
+}
 .job-edits-stale { color: var(--warn); }
 .rebuild-all-kept { color: var(--aqua); }
 .rebuild-all-aside { color: var(--warn); }
@@ -1105,12 +1123,27 @@ function jobCard(job) {
 
   card.append(title, artist, stateLine, time, mark, edits);
   card.addEventListener("click", () => selectJob(job.id));
-  paintCard(card, job);
-  return card;
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "job-delete";
+  remove.textContent = "×";
+  remove.addEventListener("click", () => deleteJob(job.id));
+
+  const row = document.createElement("div");
+  row.className = "job-row";
+  row.dataset.id = job.id;
+  row.append(card, remove);
+  paintCard(row, job);
+  return row;
 }
 
-function paintCard(card, job) {
+function paintCard(row, job) {
   const state = STATE[job.status] ?? { glyph: "·", cls: "st-queued" };
+  const [card, remove] = row.children;
+  remove.hidden = job.status === "running";
+  remove.title = job.status === "queued" ? "Remove from queue" : "Delete song";
+  remove.setAttribute("aria-label", `${remove.title}: ${job.title}`);
   const [title, artist, stateLine, time, mark, edits] = card.children;
   card.className = `job ${state.cls}`;
   if (job.id === selectedId) card.setAttribute("aria-current", "true");
@@ -1159,12 +1192,12 @@ function renderJobs(jobs) {
     return;
   }
   const existing = new Map(
-    [...jobsDiv.querySelectorAll(".job")].map(card => [card.dataset.id, card]));
+    [...jobsDiv.querySelectorAll(".job-row")].map(row => [row.dataset.id, row]));
   jobs.forEach((job, i) => {
-    let card = existing.get(job.id);
-    if (card) { existing.delete(job.id); paintCard(card, job); }
-    else card = jobCard(job);
-    if (jobsDiv.children[i] !== card) jobsDiv.insertBefore(card, jobsDiv.children[i] ?? null);
+    let row = existing.get(job.id);
+    if (row) { existing.delete(job.id); paintCard(row, job); }
+    else row = jobCard(job);
+    if (jobsDiv.children[i] !== row) jobsDiv.insertBefore(row, jobsDiv.children[i] ?? null);
   });
   for (const stale of existing.values()) stale.remove();
   while (jobsDiv.children.length > jobs.length) jobsDiv.lastElementChild.remove();
@@ -1239,6 +1272,8 @@ async function refreshJobs() {
   const resp = await fetch("/api/jobs");
   const jobs = await resp.json();
   JOBS = jobs;
+  if (!jobs.some(j => j.id === selectedId)) selectedId = null;
+  if (rebuildOf !== null && !jobs.some(j => j.id === rebuildOf)) exitRebuild();
   // deliberately not via selectJob: the auto-selection on load fills the review
   // panel but leaves the form blank, so landing on the page is still the way to
   // start a new song. Clicking a queue entry is what loads its inputs.
@@ -1792,7 +1827,9 @@ async function rebuildFullJob(id) {
 }
 
 async function deleteJob(id) {
-  if (!confirm("Delete this song? This removes all its files and cannot be undone.")) return;
+  const queued = JOBS.find(j => j.id === id)?.status === "queued";
+  if (!confirm(queued ? "Remove this job from the queue?"
+               : "Delete this song? This removes all its files and cannot be undone.")) return;
   formError.textContent = "";
   const resp = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
   if (!resp.ok) {
@@ -1832,7 +1869,8 @@ function renderActions(job) {
   // no controls mid-run: every endpoint answers 409 until the job settles
   const doneActions = ["rebuild-full", "delete"];
   const wanted = job.status === "failed" ? ["rerun", ...doneActions]
-               : job.status === "done" ? doneActions : [];
+               : job.status === "done" ? doneActions
+               : job.status === "queued" ? ["delete"] : [];
   const shown = [...reviewActions.children].map(b => b.dataset.action);
   // rebuilding an unchanged row would detach a focused action on every poll
   if (reviewActions.dataset.jobId === job.id && shown.join() === wanted.join()) return;
