@@ -238,7 +238,8 @@ body {
 
 /* --- main --------------------------------------------------------------- */
 
-#main { grid-area: main; overflow-y: auto; padding: 30px 34px 36px; }
+/* placeSheet holds the sheet in place itself */
+#main { grid-area: main; overflow-y: auto; overflow-anchor: none; padding: 30px 34px 36px; }
 #main > section { max-width: 760px; margin-inline: auto; }
 #main h2 {
   margin: 0 0 18px;
@@ -1379,6 +1380,7 @@ function lineTimeline(words, notes, minPitch, span) {
 function lineNode(line, minPitch, span) {
   const row = document.createElement("div");
   row.className = "review-line" + (line.dropped ? " review-line-dropped" : "");
+  row.dataset.line = line.index;
   if (line.dropped) {
     const text = document.createElement("span");
     text.className = "review-line-text";
@@ -1464,18 +1466,42 @@ const DRIFT = 0.25;  // seconds before the picture is worth re-seeking
 // the note sheet lives in its own module, loaded before any review renders
 let sheet = null;
 let stopAt = null;   // set by playing one line: where playback pauses again
+// playback started from the sheet: checking a line is not following the song,
+// so the sheet keeps its line and the view stays put
+let fromSheet = false;
+const sheetEl = document.getElementById("sheet");
+let sheetLine = null;
+
+// the sheet sits in the lyric list right above the line it edits, holding its
+// place on screen as it moves so the controls stay under the pointer
+const mainPanel = document.getElementById("main");
+function placeSheet(i, top = sheetEl.isConnected && !sheetEl.hidden
+                              ? sheetEl.getBoundingClientRect().top : null) {
+  sheetLine = i;
+  const row = document.querySelector(`#lyrics-review > [data-line="${i}"]`);
+  if (!row || row.previousElementSibling === sheetEl) return;
+  const focused = sheetEl.contains(document.activeElement) ? document.activeElement : null;
+  row.before(sheetEl);
+  // moving a node blurs whatever inside it had focus
+  focused?.focus({ preventScroll: true });
+  if (top !== null) mainPanel.scrollTop += sheetEl.getBoundingClientRect().top - top;
+}
+
 const sheetReady = import("/static/sheet.js").then((m) => {
-  sheet = m.createSheet(document.getElementById("sheet"), {
+  sheet = m.createSheet(sheetEl, {
     seek: (t) => {
+      fromSheet = true;
       media.currentTime = t;
       if (media.paused) syncPlayback();
     },
     playLine: (from, to) => {
       if (player.hidden) return;
+      fromSheet = true;
       media.currentTime = from;
       stopAt = to;
       media.play().catch(() => {});
     },
+    onOpen: (i) => placeSheet(i),
     // the realignment is a new build of the song, followed like any other
     onRealign: (id) => {
       selectedId = id;
@@ -1485,7 +1511,9 @@ const sheetReady = import("/static/sheet.js").then((m) => {
     onSaved: (data) => {
       const box = document.getElementById("lyrics-review");
       const { nodes, entries } = buildLyricsReview(data);
+      const top = sheetEl.getBoundingClientRect().top;
       box.replaceChildren(...nodes);
+      placeSheet(sheetLine, top);
       bindTimeline(player.hidden ? [] : entries);
       if (!player.hidden) syncPlayback();
     },
@@ -1549,7 +1577,7 @@ function syncPlayback() {
     activeEntry = entry;
     if (entry) {
       entry.row.classList.add("review-line-active");
-      sheet?.showLine(entry.index);
+      if (!fromSheet) sheet?.showLine(entry.index);
       focusActive();
     }
   }
@@ -1561,8 +1589,12 @@ function syncPlayback() {
 // while running, so it does not fight a reader who has scrolled away to look
 // at something else
 function focusActive() {
-  if (!activeEntry || media.paused) return;
-  activeEntry.row.scrollIntoView({ block: "center", behavior: "smooth" });
+  if (!activeEntry || media.paused || fromSheet) return;
+  if (sheetLine === activeEntry.index && !sheetEl.hidden) {
+    sheetEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  } else {
+    activeEntry.row.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
 }
 
 function pumpPlayback() {
@@ -1574,6 +1606,7 @@ function pumpPlayback() {
 
 // timeupdate fires about four times a second, too coarse for a playhead
 media.addEventListener("play", () => {
+  if (stopAt === null) fromSheet = false;  // the song itself, not a line check
   if (syncFrame === null) syncFrame = requestAnimationFrame(pumpPlayback);
   if (!video.hidden && video.getAttribute("src")) video.play().catch(() => {});
   focusActive();  // the line may already be active from a seek while paused
@@ -1590,6 +1623,7 @@ function bindTimeline(entries) {
     entry.row.classList.add("review-seek");
     entry.row.title = "click to play from here";
     entry.row.addEventListener("click", (e) => {
+      fromSheet = false;
       const word = entry.words.find(w => w.el === e.target);
       media.currentTime = word ? word.start : entry.t0;
       if (media.paused) syncPlayback();

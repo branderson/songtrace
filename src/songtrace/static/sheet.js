@@ -130,7 +130,7 @@ function div(cls, text = null) {
   return node;
 }
 
-export function createSheet(root, { seek, playLine, onSaved, onRealign }) {
+export function createSheet(root, { seek, playLine, onSaved, onRealign, onOpen }) {
   const button = (label, title, onClick, cls = "action") => {
     const b = document.createElement("button");
     b.type = "button";
@@ -365,6 +365,7 @@ export function createSheet(root, { seek, playLine, onSaved, onRealign }) {
     fit(true);
     paintStale();
     render();
+    onOpen?.(i);
   }
 
   // asked for by the person using the sheet, so it may cost them their edits
