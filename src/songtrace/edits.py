@@ -20,8 +20,10 @@ KINDS = {":", "*", "F", "R", "G"}
 
 def _empty(lyrics: list[list[str]]) -> dict:
     # grid: the BPM and GAP set in the editor, or None for the pipeline's own;
-    # breaks: line breaks moved by hand, keyed by the line each comes before
-    return {"lyrics": lyrics, "lines": {}, "stale": [], "grid": None, "breaks": {}}
+    # breaks: line breaks moved by hand, keyed by the line each comes before;
+    # anchors: lines pinned to start at a time, for the next alignment
+    return {"lyrics": lyrics, "lines": {}, "stale": [], "grid": None, "breaks": {},
+            "anchors": {}}
 
 
 def load(work: Path, lyrics: list[list[str]]) -> dict:
@@ -35,7 +37,7 @@ def load(work: Path, lyrics: list[list[str]]) -> dict:
     path = work / EDITS_FILE
     if not path.exists():
         return _empty(lyrics)
-    data = json.loads(path.read_text())
+    data = {"anchors": {}, **json.loads(path.read_text())}
     if data["lyrics"] != lyrics:
         data = _remap(data, lyrics)
         save(work, data)
@@ -44,7 +46,8 @@ def load(work: Path, lyrics: list[list[str]]) -> dict:
 
 def save(work: Path, data: dict) -> None:
     path = work / EDITS_FILE
-    if not (data["lines"] or data["stale"] or data.get("grid") or data.get("breaks")):
+    if not (data["lines"] or data["stale"] or data.get("grid") or data.get("breaks")
+            or data.get("anchors")):
         path.unlink(missing_ok=True)
         return
     tmp = path.with_suffix(".tmp")
@@ -69,10 +72,12 @@ def _remap(data: dict, lyrics: list[list[str]]) -> dict:
             lines[str(to)] = {**edit, "line_index": to}
     # a moved break goes with the line it comes before; with that line gone,
     # there is nothing left for it to separate
-    breaks = {str(moved[int(k)]): t for k, t in data.get("breaks", {}).items()
-              if int(k) in moved}
+    def carried(times: dict) -> dict:
+        return {str(moved[int(k)]): t for k, t in times.items() if int(k) in moved}
+
     return {"lyrics": lyrics, "lines": lines, "stale": stale, "grid": data.get("grid"),
-            "breaks": breaks}
+            "breaks": carried(data.get("breaks", {})),
+            "anchors": carried(data.get("anchors", {}))}
 
 
 def validate_notes(notes: list[dict]) -> list[dict]:
@@ -105,28 +110,47 @@ def clear_line(data: dict, index: int) -> bool:
     return data["lines"].pop(str(index), None) is not None
 
 
-def set_breaks(data: dict, changes: dict) -> None:
-    """Move line breaks, each keyed by the line it comes before, to a time in
-    seconds; None puts one back to where the notes alone would place it."""
-    breaks = dict(data.get("breaks", {}))
+def _set_times(times: dict, changes: dict, lines: range, what: str) -> dict:
+    """`times` with `changes` applied: seconds keyed by line, None removing one."""
+    times = dict(times)
     for key, t in changes.items():
         try:
             line = int(key)
         except (TypeError, ValueError):
-            raise ValueError(f"a break is keyed by the line it comes before, not {key!r}")
-        if not 0 < line < len(data["lyrics"]):
-            raise ValueError(f"no line {line} for a break to come before")
+            raise ValueError(f"a {what} is keyed by its line, not {key!r}")
+        if line not in lines:
+            raise ValueError(f"no line {line} for a {what}")
         if t is None:
-            breaks.pop(str(line), None)
+            times.pop(str(line), None)
             continue
         try:
             t = float(t)
         except (TypeError, ValueError):
-            raise ValueError(f"a break needs a time in seconds, not {t!r}")
+            raise ValueError(f"a {what} needs a time in seconds, not {t!r}")
         if not (math.isfinite(t) and t >= 0):
-            raise ValueError(f"a break needs a time of 0 or more, not {t}")
-        breaks[str(line)] = t
-    data["breaks"] = breaks
+            raise ValueError(f"a {what} needs a time of 0 or more, not {t}")
+        times[str(line)] = t
+    return times
+
+
+def set_breaks(data: dict, changes: dict) -> None:
+    """Move line breaks, each keyed by the line it comes before, to a time in
+    seconds; None puts one back to where the notes alone would place it."""
+    data["breaks"] = _set_times(data.get("breaks", {}), changes,
+                                range(1, len(data["lyrics"])), "break")
+
+
+def set_anchors(data: dict, changes: dict) -> None:
+    """Pin lines to start at a time in seconds, which the next alignment keeps
+    to; None unpins one. Pins must run in the order of their lines."""
+    anchors = _set_times(data.get("anchors", {}), changes,
+                         range(len(data["lyrics"])), "pin")
+    pins = sorted((int(k), t) for k, t in anchors.items())
+    for (a, ta), (b, tb) in zip(pins, pins[1:]):
+        if tb <= ta:
+            raise ValueError(f"line {b + 1} cannot start at {tb:.2f}s, before "
+                             f"line {a + 1} (pinned at {ta:.2f}s)")
+    data["anchors"] = anchors
 
 
 def set_grid(data: dict, bpm, gap_ms) -> None:

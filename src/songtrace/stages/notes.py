@@ -23,7 +23,7 @@ def _run(ctx: Ctx) -> None:
     (ctx.work / "notes_sec.json").write_text(json.dumps({
         "notes": [asdict(n) for n in notes],
         "breaks": breaks,
-        "warnings": warnings,
+        "warnings": warnings + meta.get("warnings", []),
     }))
 
 

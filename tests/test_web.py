@@ -1412,16 +1412,16 @@ def test_review_endpoint_groups_notes_by_line(tmp_path):
     wait_status(client, job_id, "done")
     body = client.get(f"/api/jobs/{job_id}/review").json()
     assert body["lines"] == [
-        {"index": 0, "text": "hi", "dropped": False, "edited": False,
+        {"index": 0, "text": "hi", "dropped": False, "edited": False, "pin": None,
          "notes": [{"start": 1.0, "end": 1.4, "pitch": 0, "low_confidence": False,
                     "text": "hi", "kind": ":"}],
          "words": []},
-        {"index": 1, "text": "there", "dropped": False, "edited": False,
+        {"index": 1, "text": "there", "dropped": False, "edited": False, "pin": None,
          "notes": [{"start": 5.0, "end": 5.3, "pitch": 2, "low_confidence": True,
                     "text": "there", "kind": ":"}],
          "words": []},
-        {"index": 2, "text": "gone", "dropped": True, "edited": False, "notes": [],
-         "words": []},
+        {"index": 2, "text": "gone", "dropped": True, "edited": False, "pin": None,
+         "notes": [], "words": []},
     ]
     assert body["missing_spans"] == [{"start": 8.0, "end": 9.5}]
 
@@ -2074,6 +2074,43 @@ def test_a_bad_break_is_refused(tmp_path):
     job_id = make_charted_job(client)
     for body in ({"0": 1.0}, {"9": 1.0}, {"1": -2}, {"1": "x"}):
         assert client.put(f"/api/jobs/{job_id}/breaks", json=body).status_code == 400
+
+
+def test_pinning_a_line_waits_for_a_realign_from_the_alignment(tmp_path):
+    forced = []
+
+    def runner(inp, cfg, log=print, force_from=None, stages=None):
+        forced.append(force_from)
+        work = cfg.work_dir / song_slug(inp)
+        work.mkdir(parents=True, exist_ok=True)
+        # what align records: the pins it followed
+        pins = json.loads((work / "edits.json").read_text())["anchors"] \
+            if (work / "edits.json").exists() else {}
+        (work / "align_meta.json").write_text(json.dumps({"anchors": pins}))
+        return chart_runner(inp, cfg, log, force_from, stages)
+
+    client, _ = make_client(tmp_path, runner)
+    job_id = make_charted_job(client)
+    review = client.get(f"/api/jobs/{job_id}/review").json()
+    assert [line["pin"] for line in review["lines"]] == [None, None]
+    assert review["realign_pending"] is False
+    review = client.put(f"/api/jobs/{job_id}/anchors", json={"1": 12.5}).json()
+    assert [line["pin"] for line in review["lines"]] == [None, 12.5]
+    assert review["realign_pending"] is True
+    resp = client.post(f"/api/jobs/{job_id}/realign")
+    assert resp.status_code == 201
+    new_id = resp.json()["id"]
+    job = wait_status(client, new_id, "done")
+    assert job["rebuilt_from"] == job_id and forced[-1] == "align"
+    assert client.get(f"/api/jobs/{new_id}/review").json()["realign_pending"] is False
+
+
+def test_a_bad_pin_is_refused(tmp_path):
+    client, _ = make_client(tmp_path, chart_runner)
+    job_id = make_charted_job(client)
+    client.put(f"/api/jobs/{job_id}/anchors", json={"1": 5.0})
+    for body in ({"0": 6.0}, {"9": 1.0}, {"1": -2}, {"1": "x"}):
+        assert client.put(f"/api/jobs/{job_id}/anchors", json=body).status_code == 400
 
 
 def _listed(client, job_id):

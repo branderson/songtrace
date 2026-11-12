@@ -6,16 +6,6 @@ from ..pipeline import Ctx, Stage
 from ..whisper_client import TranscriptSegment, transcribe
 
 
-def vocal_sections(segments, min_gap: float = 6.0, pad: float = 1.0):
-    sections = []
-    for s in sorted(segments, key=lambda s: s.start):
-        if sections and s.start - sections[-1][1] < min_gap:
-            sections[-1][1] = max(sections[-1][1], s.end)
-        else:
-            sections.append([s.start, s.end])
-    return [(max(0.0, a - pad), b + pad) for a, b in sections]
-
-
 def _tokens(text: str) -> list[str]:
     return [t for w in text.split() if (t := alignment_token(w))]
 
@@ -30,7 +20,9 @@ def match_lyrics(segments, ref: RefLyrics):
              if (t := alignment_token(w))]
     expected = [t for t, _ in pairs]
     line_of = [li for _, li in pairs]
-    matcher = difflib.SequenceMatcher(a=heard, b=expected)
+    # no autojunk: it ignores any word that is over 1% of a long lyric, which
+    # in a song is most of the chorus
+    matcher = difflib.SequenceMatcher(a=heard, b=expected, autojunk=False)
     return matcher, seg_of, line_of
 
 
@@ -78,13 +70,6 @@ def _unheard_runs(segments, ref: RefLyrics, unheard
             run.append(li)
     close(float("inf"))
     return runs, spans
-
-
-def recovered_spans(segments, ref: RefLyrics, unheard) -> list[tuple[float, float]]:
-    """The untranscribed singing that stands in for lines Whisper missed, so
-    alignment can place them there."""
-    return _merge_spans([sp for spans in _unheard_runs(segments, ref, unheard)[1]
-                         for sp in spans])
 
 
 def classify_lyrics_match(segments, ref: RefLyrics, pad: float = 1.0, unheard=()

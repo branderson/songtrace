@@ -277,6 +277,13 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         return _enqueue(uuid.uuid4().hex, parent.inp, rebuilt_from=job_id,
                         force_stage=STAGE_ORDER[0])
 
+    @app.post("/api/jobs/{job_id}/realign", status_code=201)
+    def realign(job_id: str):
+        """Rebuild from the alignment, to follow the lines pinned since."""
+        parent = _editable(job_id)
+        return _enqueue(uuid.uuid4().hex, parent.inp, rebuilt_from=job_id,
+                        force_stage="align")
+
     def _require_source(parent_inp: SongInput, inp: SongInput,
                         force_from: str | None) -> None:
         """Refuse a rebuild that will rerun acquire against an upload we no longer have."""
@@ -510,8 +517,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 "pitch": n["pitch"], "low_confidence": n["low_confidence"],
                 "text": n["text"], "kind": n.get("kind", ":")})
         edited = set(notes_data.get("edited_lines", []))
+        pins = edits.load(work, ref.lines)["anchors"]
         lines = [{"index": i, "text": " ".join(words), "dropped": i in dropped,
-                  "edited": i in edited,
+                  "edited": i in edited, "pin": pins.get(str(i)),
                   "notes": by_line.get(i, []), "words": words_by_line.get(i, [])}
                  for i, words in enumerate(ref.lines)]
         stale = [{"text": " ".join(e["words"]), "notes": e["notes"]}
@@ -529,7 +537,9 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
                 breaks.append({"line": after, "time": t, "moved": after in moved})
         return {"lines": lines, "missing_spans": missing_spans, "media": media,
                 "stale": stale, "breaks": breaks, "grid": _chart_grid(work),
-                "grid_edited": bool(notes_data.get("grid")), "auto_bpm": _auto_bpm(work)}
+                "grid_edited": bool(notes_data.get("grid")), "auto_bpm": _auto_bpm(work),
+                # pins the chart was not aligned with yet
+                "realign_pending": pins != meta.get("anchors", {})}
 
     @app.get("/api/jobs/{job_id}/pitch")
     def get_pitch(job_id: str):
@@ -615,6 +625,12 @@ def create_app(cfg: Config, runner=run_pipeline) -> FastAPI:
         """Move line breaks: {line: seconds}, keyed by the line each comes
         before; null puts one back where the notes alone would place it."""
         return _edit(job_id, lambda data, lyrics: edits.set_breaks(data, body))
+
+    @app.put("/api/jobs/{job_id}/anchors")
+    def save_anchors(job_id: str, body: dict = Body(...)):
+        """Pin lines to start at a time: {line: seconds}, null unpinning one.
+        The chart follows them once the song is realigned."""
+        return _edit(job_id, lambda data, lyrics: edits.set_anchors(data, body))
 
     @app.put("/api/jobs/{job_id}/grid")
     def save_grid(job_id: str, body: dict = Body(...)):
