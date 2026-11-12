@@ -705,7 +705,13 @@ def _playback_flaws(html):
         flaws.append("the view is scrolled even while paused, fighting a reader "
                      "who scrolled away to look at something else")
 
+    # a line played or clicked in the sheet ends past it, inside the next one
+    if "fromSheet" not in _fn_body(html, "focusActive"):
+        flaws.append("checking a line from the sheet scrolls the view to the next one")
+
     sync = _fn_body(html, "syncPlayback")
+    if "if (!fromSheet) sheet?.showLine(" not in sync:
+        flaws.append("checking a line from the sheet moves the sheet on to the next one")
     if "clearEntry(" not in sync:
         flaws.append("the line the playhead left keeps its highlight")
     clear = _fn_body(html, "clearEntry")
@@ -785,7 +791,13 @@ MUTATIONS = [
      "syncFrame = media.paused ? null : requestAnimationFrame(pumpPlayback);",
      "syncFrame = null;"),
     (_playback_flaws, "playback: the view is scrolled even while paused",
-     "if (!activeEntry || media.paused) return;", "if (!activeEntry) return;"),
+     "if (!activeEntry || media.paused || fromSheet) return;",
+     "if (!activeEntry || fromSheet) return;"),
+    (_playback_flaws, "playback: checking a line from the sheet scrolls the view",
+     "if (!activeEntry || media.paused || fromSheet) return;",
+     "if (!activeEntry || media.paused) return;"),
+    (_playback_flaws, "playback: the sheet follows the song while checking a line",
+     "if (!fromSheet) sheet?.showLine(entry.index);", "sheet?.showLine(entry.index);"),
     (_playback_flaws, "playback: the line the playhead left keeps its highlight",
      "    if (activeEntry) clearEntry(activeEntry);\n", ""),
     (_playback_flaws, "playback: a word stays lit after the playhead moves on",
