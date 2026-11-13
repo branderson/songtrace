@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -122,7 +123,18 @@ def test_package_outputs_done_marker():
     cfg = Config(whisper_url="u", output_dir=Path("out"), work_dir=Path("work"))
     inp = SongInput(title="T", artist="A", lyrics_text="x")
     ctx = Ctx(inp=inp, cfg=cfg, work=Path("work"), log=lambda m: None)
-    assert ctx_outputs(ctx) == [Path("work/package.done")]
+    assert ctx_outputs(ctx) == [Path("work/package.done"), Path("out/A - T/A - T.txt")]
+
+
+def test_package_reruns_when_the_song_folder_is_gone(tmp_path, monkeypatch):
+    monkeypatch.setattr(package, "ffmpeg", lambda *a: Path(a[-1]).write_bytes(b"m"))
+    monkeypatch.setattr(package, "ffprobe_codec", lambda p: ("webm", "vp9"))
+    ctx = make_ctx(tmp_path, cover=make_cover(tmp_path))
+    stage = package.package_stage()
+    stage.run(ctx)
+    assert all(p.exists() for p in stage.outputs(ctx))
+    shutil.rmtree(tmp_path / "out" / "A - T")
+    assert not all(p.exists() for p in stage.outputs(ctx))
 
 
 def test_package_corrupt_cover_degrades_to_no_cover(tmp_path, monkeypatch):

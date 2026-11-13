@@ -80,5 +80,6 @@ def _run(ctx: Ctx) -> None:
 
 def package_stage() -> Stage:
     def outputs(ctx: Ctx):
-        return [ctx.work / "package.done"]
+        slug = song_slug(ctx.inp)
+        return [ctx.work / "package.done", ctx.cfg.output_dir / slug / f"{slug}.txt"]
     return Stage(name="package", outputs=outputs, run=_run)
