@@ -1449,6 +1449,23 @@ def test_discover_jobs_reconstructs_a_song_whose_output_is_missing_as_failed(tmp
     assert discovered[0].output_dir is None
 
 
+def test_discover_jobs_keeps_a_finished_song_whose_folder_is_gone(tmp_path):
+    """A container rebuilt with output_dir off its volume, or a folder moved
+    into the game's library, still leaves a finished song editable."""
+    from songtrace.web import _discover_jobs
+    cfg = Config(whisper_url="u", work_dir=tmp_path / "work", output_dir=tmp_path / "out")
+    client = TestClient(create_app(cfg, runner=slug_runner))
+    make_done_job(client)
+    (cfg.work_dir / "A - T" / "package.done").write_text("")
+    shutil.rmtree(cfg.output_dir / "A - T")
+
+    [job] = _discover_jobs(cfg)
+
+    assert job.status == "done"
+    assert job.output_dir == str(cfg.output_dir / "A - T")
+    assert "song folder is missing" in job.error
+
+
 def test_discovered_jobs_are_visible_from_a_fresh_app(tmp_path):
     cfg = Config(whisper_url="u", work_dir=tmp_path / "work", output_dir=tmp_path / "out")
     client1 = TestClient(create_app(cfg, runner=slug_runner))

@@ -124,17 +124,24 @@ def _discover_jobs(cfg: Config) -> list[Job]:
             inp = SongInput(**data)
             slug = song_slug(inp)
             out = cfg.output_dir / slug
-            done = out.exists() and any(out.iterdir())
+            packaged = out.exists() and any(out.iterdir())
+            # the work dir holds everything the review and editor need, so a
+            # song folder gone from output_dir does not undo a finished build
+            done = packaged or (sidecar.parent / "package.done").exists()
             mtime = sidecar.stat().st_mtime
             warnings = read_warnings(sidecar.parent) if done else []
         except (OSError, ValueError, TypeError):
             continue
+        error = None
+        if not done:
+            error = "interrupted before completion"
+        elif not packaged:
+            error = f"the song folder is missing from {cfg.output_dir}; rebuild to restore it"
         discovered.append(Job(
             id=uuid.uuid4().hex, title=inp.title, artist=inp.artist, inp=inp,
             status="done" if done else "failed",
             output_dir=str(out) if done else None,
-            warnings=warnings,
-            error=None if done else "interrupted before completion",
+            warnings=warnings, error=error,
             created_at=mtime, finished_at=mtime))
     discovered.sort(key=lambda j: j.created_at)
     return discovered
